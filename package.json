@@ -1,0 +1,9 @@
+{
+  "name": "nexora",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "bash start.sh",
+    "start": "bash start.sh"
+  }
+}
