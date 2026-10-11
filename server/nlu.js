@@ -172,6 +172,31 @@ function extractReference(text) {
   return null
 }
 
+/**
+ * Aggregation queries: "highest invoice", "total expenses", "how many POs",
+ * "average amount in finance". No AI needed — pure pattern matching.
+ */
+function detectAggregation(text) {
+  const t = normalize(text)
+  if (/\b(highest|maximum|biggest|largest|most expensive)\b/.test(t)) return 'max'
+  if (/\b(lowest|minimum|smallest|least|cheapest)\b/.test(t)) return 'min'
+  if (/\btotal\b/.test(t) || /\bsum\b/.test(t)) return 'sum'
+  if (/\b(average|avg|mean)\b/.test(t)) return 'avg'
+  if (/\bhow many\b/.test(t) || /\b(number|count) of\b/.test(t)) return 'count'
+  return null
+}
+
+/** Department mentioned outright: "in finance", "for HR", "supply chain". */
+function detectDepartment(text) {
+  const t = normalize(text)
+  if (/\bsupply[\s-]?chain\b/.test(t) || /\blogistics\b/.test(t)) return 'supply_chain'
+  if (/\bprocurement\b/.test(t)) return 'procurement'
+  if (/\bhr\b/.test(t) || /\bhuman resources\b/.test(t)) return 'hr'
+  if (/\bquality\b/.test(t)) return 'quality'
+  if (/\bfinance\b/.test(t) || /\bfinancial\b/.test(t)) return 'finance'
+  return null
+}
+
 function extractDestination(text) {
   const t = String(text)
   const m = t.match(/\bto\s+([A-Za-z][A-Za-z0-9 .'-]{1,40})/)
@@ -414,6 +439,14 @@ function buildFields(t, rawText, entity, action, user) {
   if (person && !person.self) f.person = person.name
   if (person && person.self) { f.person = user.full_name }
 
+  // Aggregation queries ("highest invoice", "total expenses in finance")
+  const aggregation = detectAggregation(t)
+  if (action === 'query' && aggregation) {
+    f.aggregation = aggregation
+    f.metric = 'amount'
+    f.department_scope = detectDepartment(rawText) || ENTITY_DEPT[entity] || 'finance'
+  }
+
   if (entity === 'invoice') {
     if (person && !person.self) f.vendor = person.name
     else {
@@ -503,6 +536,7 @@ function parseNaturalLanguage(text, user) {
   let finalAction = action || 'query'
   if (finalAction === 'query' && !finalEntity) {
     if (/\bapproval\b/.test(t)) finalEntity = 'approvals'
+    else if (detectAggregation(t)) finalEntity = 'record' // department-scoped aggregation
     else finalEntity = null
   }
   if (!finalEntity) {
@@ -524,6 +558,9 @@ function parseNaturalLanguage(text, user) {
     intent: 'command',
   }
   applyDefaults(parsed, user, rawText)
+
+  // Department-scoped aggregation ("highest amount in finance") governs permissions too.
+  if (parsed.fields?.department_scope) parsed.department = parsed.fields.department_scope
 
   // confidence: action hit + entity hit + filled required slots
   let conf = 0.45

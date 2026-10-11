@@ -146,5 +146,27 @@ check('ISO dates: leave 2026-12-20 to 2026-12-25', () => {
 check('ISO single date', () => {
   assert.strictEqual(nlu.extractDate('invoice due 2026-03-05'), '2026-03-05')
 })
+check('aggregation: highest amount in finance', () => {
+  const p = nlu.parseNaturalLanguage('highest amount in finance', user)
+  assert.strictEqual(p.action, 'query')
+  assert.strictEqual(p.fields.aggregation, 'max')
+  assert.strictEqual(p.fields.department_scope, 'finance')
+  assert.strictEqual(p.department, 'finance')
+})
+check('aggregation: total expenses', () => {
+  const p = nlu.parseNaturalLanguage('total expenses', user)
+  assert.strictEqual(p.fields.aggregation, 'sum')
+  assert.strictEqual(p.entity, 'expense')
+})
+check('aggregation: how many purchase orders', () => {
+  const p = nlu.parseNaturalLanguage('how many purchase orders are there', user)
+  assert.strictEqual(p.fields.aggregation, 'count')
+  assert.strictEqual(p.entity, 'purchase_order')
+})
+check('aggregation: lowest invoice', () => {
+  const p = nlu.parseNaturalLanguage('lowest invoice', user)
+  assert.strictEqual(p.fields.aggregation, 'min')
+  assert.strictEqual(p.entity, 'invoice')
+})
 
 console.log(`\n${passed} unit checks passed${process.exitCode ? ' (WITH FAILURES)' : ''}`)

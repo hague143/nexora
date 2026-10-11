@@ -86,6 +86,17 @@ async function main() {
   const pend = await all(`SELECT * FROM pending_commands WHERE user_id = ?`, [user.id])
   assert.strictEqual(pend.length, 0, 'no stale pending commands')
 
+  // 9. aggregation queries (no API key)
+  r = await cmd('highest amount in finance')
+  assert.strictEqual(r.status, 'success')
+  assert.match(r.summary, /Highest amount in finance: /)
+  r = await cmd('how many purchase orders')
+  assert.strictEqual(r.status, 'success')
+  assert.match(r.summary, /purchase orders?$/)
+  r = await cmd('total expenses')
+  assert.strictEqual(r.status, 'success')
+  assert.match(r.summary, /Total expense amount: \$/)
+
   console.log(`\nAll ${n} command-flow checks passed.`)
 }
 

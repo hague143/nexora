@@ -380,6 +380,83 @@ function money(n) {
   return `$${Number(n || 0).toLocaleString()}`
 }
 
+/**
+ * Aggregation queries — "highest invoice", "total expenses", "how many POs",
+ * "average amount in finance". Pure SQL, no AI.
+ */
+const AMOUNT_TABLES = {
+  invoice: 'invoices', expense: 'expenses', purchase_order: 'purchase_orders',
+}
+const DEPT_TABLES = {
+  finance: [['invoices', 'invoice'], ['expenses', 'expense']],
+  hr: [['leave_requests', 'leave_request']],
+  procurement: [['purchase_orders', 'purchase_order']],
+  supply_chain: [['shipments', 'shipment'], ['inventory_items', 'inventory_item']],
+  quality: [['quality_inspections', 'quality_inspection'], ['quality_issues', 'quality_issue']],
+}
+const AGG_WORD = { max: 'Highest', min: 'Lowest', sum: 'Total', avg: 'Average', count: 'Count' }
+
+async function queryAggregation(user, parsed) {
+  const agg = parsed.fields.aggregation
+  const scope = parsed.fields.department_scope || parsed.department
+  const scoped = parsed.entity === 'record' // department-wide ("in finance")
+  const pairs = scoped
+    ? (DEPT_TABLES[scope] || [])
+    : [[QUERY_TABLE[parsed.entity], parsed.entity]]
+  const scopeLabel = scoped ? scope.replace('_', ' ') : (QUERY_LABEL[parsed.entity] || parsed.entity)
+
+  if (agg === 'count') {
+    let total = 0
+    const parts = []
+    for (const [table, entity] of pairs) {
+      const row = await get(`SELECT COUNT(*) AS c FROM ${table} WHERE company_id = ?`, [user.company_id])
+      const c = Number(row?.c || 0)
+      total += c
+      if (scoped) parts.push(`${c} ${(QUERY_LABEL[entity] || entity)}${c === 1 ? '' : 's'}`)
+    }
+    if (!total) return ok(`No ${scopeLabel} records found yet.`, { count: 0 })
+    const summary = scoped
+      ? `${total} records in ${scopeLabel} (${parts.join(', ')})`
+      : `${total} ${(QUERY_LABEL[parsed.entity] || parsed.entity)}${total === 1 ? '' : 's'}`
+    return ok(summary, { count: total })
+  }
+
+  // amount-based aggregations only make sense where money lives
+  const amountPairs = pairs.filter(([, entity]) => AMOUNT_TABLES[entity])
+  if (!amountPairs.length) {
+    return ok(`I can only total amounts for invoices, expenses and purchase orders — not ${scopeLabel}.`, { count: 0 })
+  }
+  if (agg === 'max' || agg === 'min') {
+    const dir = agg === 'max' ? 'DESC' : 'ASC'
+    let best = null
+    for (const [table, entity] of amountPairs) {
+      const row = await get(
+        `SELECT * FROM ${table} WHERE company_id = ? ORDER BY amount ${dir} LIMIT 1`, [user.company_id]
+      )
+      if (row && (best == null || (agg === 'max' ? row.amount > best.row.amount : row.amount < best.row.amount))) {
+        best = { row, entity }
+      }
+    }
+    if (!best) return ok(`No ${scopeLabel} records found yet.`, { count: 0 })
+    const kind = { expense: 'expense', invoice: 'invoice', purchase_order: 'po' }[best.entity] || best.entity
+    const label = scoped ? `amount in ${scopeLabel}` : `${QUERY_LABEL[best.entity] || best.entity} amount`
+    return ok(`${AGG_WORD[agg]} ${label}: ${describeRow(kind, best.row)}`, { record: best.row })
+  }
+  // sum / avg
+  let total = 0, count = 0
+  for (const [table] of amountPairs) {
+    const row = await get(
+      `SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM ${table} WHERE company_id = ?`, [user.company_id]
+    )
+    total += Number(row?.s || 0)
+    count += Number(row?.c || 0)
+  }
+  if (!count) return ok(`No ${scopeLabel} records found yet.`, { count: 0 })
+  const value = agg === 'avg' ? total / count : total
+  const label = scoped ? `amount in ${scopeLabel}` : `${QUERY_LABEL[parsed.entity] || parsed.entity} amount`
+  return ok(`${AGG_WORD[agg]} ${label}: ${money(Math.round(value * 100) / 100)} across ${count} record${count === 1 ? '' : 's'}`, { value, count })
+}
+
 function describeRow(kind, r) {
   switch (kind) {
     case 'expense': return `${r.employee_name} — ${money(r.amount)} (${r.status})`
@@ -522,6 +599,7 @@ async function undoLastAction(user) {
 async function dispatch(user, parsed) {
   if (parsed.action === 'query') {
     if (parsed.entity === 'approvals') return queryApprovals(user)
+    if (parsed.fields?.aggregation) return queryAggregation(user, parsed)
     return queryEntities(user, parsed)
   }
   if (parsed.action === 'cancel') {
