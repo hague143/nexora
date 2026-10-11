@@ -43,6 +43,7 @@ export function statusLabel(status: string) {
     rejected: 'Rejected',
     paid: 'Paid',
     fulfilled: 'Fulfilled',
+    cancelled: 'Cancelled',
   }
   return map[status] || status.replace(/_/g, ' ')
 }

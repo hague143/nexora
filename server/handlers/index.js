@@ -299,53 +299,233 @@ function rejectWrapper(table) {
 handlers.supply_chain.inventory_item.approve = supplyChainHandlers.flagLowStock
 
 async function findInvoice(cid, parsed) {
+  const refHit = await findByReference('invoices', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM invoices WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   const vendor = String(parsed.fields?.vendor || parsed.fields?.person || '').toLowerCase()
   const amount = Number(parsed.fields?.amount)
   const rows = await all(`SELECT * FROM invoices WHERE company_id = ?`, [cid])
   return rows.find((r) => (vendor && r.vendor.toLowerCase().includes(vendor)) || (!Number.isNaN(amount) && Number(r.amount) === amount))
+    || rows.find((r) => r.status === 'pending')
 }
 async function findExpense(cid, parsed) {
+  const refHit = await findByReference('expenses', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM expenses WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   const person = String(parsed.fields?.person || parsed.fields?.employee_name || '').toLowerCase()
   const amount = Number(parsed.fields?.amount)
   const rows = await all(`SELECT * FROM expenses WHERE company_id = ?`, [cid])
   return rows.find((r) => (person && r.employee_name.toLowerCase().includes(person)) || (!Number.isNaN(amount) && Number(r.amount) === amount))
+    || rows.find((r) => r.status === 'pending')
 }
 async function findLeave(cid, parsed) {
+  const refHit = await findByReference('leave_requests', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM leave_requests WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   const person = String(parsed.fields?.person || '').toLowerCase()
   const rows = await all(`SELECT * FROM leave_requests WHERE company_id = ? AND status = 'pending'`, [cid])
   return rows.find((r) => !person || r.employee_name.toLowerCase().includes(person)) || rows[0]
 }
 async function findPo(cid, parsed) {
+  const refHit = await findByReference('purchase_orders', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM purchase_orders WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   const item = String(parsed.fields?.item || '').toLowerCase()
   const rows = await all(`SELECT * FROM purchase_orders WHERE company_id = ?`, [cid])
   return rows.find((r) => r.status === 'pending' && (!item || r.item.toLowerCase().includes(item))) || rows[0]
 }
 async function findShipment(cid, parsed) {
+  const refHit = await findByReference('shipments', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM shipments WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   return (await all(`SELECT * FROM shipments WHERE company_id = ? ORDER BY created_at DESC`, [cid]))[0]
 }
 async function findInventory(cid, parsed) {
+  const refHit = await findByReference('inventory_items', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM inventory_items WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   const name = String(parsed.fields?.name || parsed.fields?.item || parsed.fields?.sku || '').toLowerCase()
   const rows = await all(`SELECT * FROM inventory_items WHERE company_id = ?`, [cid])
   return rows.find((r) => !name || r.name.toLowerCase().includes(name) || r.sku.toLowerCase().includes(name)) || rows[0]
 }
 async function findIssue(cid, parsed) {
+  const refHit = await findByReference('quality_issues', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM quality_issues WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   return (await all(`SELECT * FROM quality_issues WHERE company_id = ? AND status = 'open'`, [cid]))[0]
 }
 async function findInspection(cid, parsed) {
+  const refHit = await findByReference('quality_inspections', cid, parsed)
+  if (refHit) return refHit
   if (parsed.entity_id) return get(`SELECT * FROM quality_inspections WHERE id = ? AND company_id = ?`, [parsed.entity_id, cid])
   return (await all(`SELECT * FROM quality_inspections WHERE company_id = ? AND status = 'pending'`, [cid]))[0]
 }
 
+/** Match a short reference ("a1b2c3", "PO-12") against record id prefixes. */
+function matchReference(rows, reference) {
+  if (!reference) return null
+  const ref = String(reference).toLowerCase().replace(/^(po|inv|exp|lv|sh|qi)-?/, '')
+  return rows.find((r) => String(r.id).toLowerCase().startsWith(ref)) || null
+}
+
+async function findByReference(table, cid, parsed) {
+  if (!parsed.fields?.reference) return null
+  const rows = await all(`SELECT * FROM ${table} WHERE company_id = ? ORDER BY created_at DESC`, [cid])
+  return matchReference(rows, parsed.fields.reference)
+}
+
+/* ------------------------------ query handlers ----------------------------- */
+
+function money(n) {
+  return `$${Number(n || 0).toLocaleString()}`
+}
+
+function describeRow(kind, r) {
+  switch (kind) {
+    case 'expense': return `${r.employee_name} — ${money(r.amount)} (${r.status})`
+    case 'invoice': return `${r.vendor} — ${money(r.amount)} (${r.status})`
+    case 'leave': return `${r.employee_name} — ${r.type} from ${r.start_date} (${r.status})`
+    case 'po': return `${r.item} × ${r.quantity} — ${money(r.amount)} (${r.status})`
+    default: return `${r.id.slice(0, 8)} (${r.status})`
+  }
+}
+
+const QUERY_ORDER_BY = {
+  expense: 'ORDER BY created_at DESC', invoice: 'ORDER BY created_at DESC',
+  leave_request: '', purchase_order: '',
+  shipment: 'ORDER BY created_at DESC', inventory_item: 'ORDER BY created_at DESC',
+  quality_issue: 'ORDER BY created_at DESC', quality_inspection: 'ORDER BY created_at DESC',
+}
+
+async function queryApprovals(user) {
+  const cid = user.company_id
+  const groups = [
+    ['expenses', 'expense', 'ORDER BY created_at DESC'],
+    ['invoices', 'invoice', 'ORDER BY created_at DESC'],
+    ['leave_requests', 'leave', ''],
+    ['purchase_orders', 'po', ''],
+  ]
+  const items = []
+  for (const [table, kind, orderBy] of groups) {
+    const rows = await all(
+      `SELECT * FROM ${table} WHERE company_id = ? AND status = 'pending' ${orderBy} LIMIT 5`, [cid]
+    )
+    for (const r of rows) items.push({ kind, id: r.id, text: describeRow(kind, r) })
+  }
+  if (!items.length) return ok('No pending approvals. Everything is clear.', { count: 0, items: [] })
+  const lines = items.map((i) => `• ${i.kind}: ${i.text}`).join('\n')
+  return ok(`${items.length} pending approval${items.length === 1 ? '' : 's'}:\n${lines}`, { count: items.length, items })
+}
+
+const QUERY_FIELDS = {
+  expense: ['employee_name', 'amount', 'status', 'created_at'],
+  invoice: ['vendor', 'amount', 'status', 'created_at'],
+  leave_request: ['employee_name', 'type', 'start_date', 'status'],
+  purchase_order: ['item', 'quantity', 'amount', 'status'],
+  shipment: ['destination', 'carrier', 'status', 'created_at'],
+  inventory_item: ['name', 'quantity', 'status'],
+  quality_issue: ['title', 'severity', 'status'],
+  quality_inspection: ['lot', 'inspector', 'status'],
+}
+const QUERY_TABLE = {
+  expense: 'expenses', invoice: 'invoices', leave_request: 'leave_requests',
+  purchase_order: 'purchase_orders', shipment: 'shipments', inventory_item: 'inventory_items',
+  quality_issue: 'quality_issues', quality_inspection: 'quality_inspections',
+}
+const QUERY_LABEL = {
+  expense: 'expense', invoice: 'invoice', leave_request: 'leave request',
+  purchase_order: 'purchase order', shipment: 'shipment', inventory_item: 'inventory item',
+  quality_issue: 'quality issue', quality_inspection: 'inspection',
+}
+
+async function queryEntities(user, parsed) {
+  const table = QUERY_TABLE[parsed.entity]
+  if (!table) fail(`Can't look up ${parsed.entity}.`)
+  const label = QUERY_LABEL[parsed.entity]
+  const where = /open|pending/.test(String(parsed.fields?.filter || '')) ? `AND status IN ('pending','open','low')` : ''
+  const orderBy = QUERY_ORDER_BY[parsed.entity] || ''
+  const rows = await all(
+    `SELECT * FROM ${table} WHERE company_id = ? ${where} ${orderBy} LIMIT 5`, [user.company_id]
+  )
+  if (!rows.length) return ok(`No ${label}s found.`, { count: 0, rows: [] })
+  const kind = { expense: 'expense', invoice: 'invoice', leave_request: 'leave', purchase_order: 'po' }[parsed.entity] || parsed.entity
+  const lines = rows.map((r) => {
+    if (parsed.entity === 'shipment') return `• ${r.destination} via ${r.carrier} — ${r.status}`
+    if (parsed.entity === 'inventory_item') return `• ${r.name}: ${r.quantity} on hand (${r.status})`
+    if (parsed.entity === 'quality_issue') return `• ${r.title} [${r.severity}] — ${r.status}`
+    if (parsed.entity === 'quality_inspection') return `• Lot ${r.lot} — ${r.status}`
+    return `• ${describeRow(kind, r)}`
+  }).join('\n')
+  const fields = QUERY_FIELDS[parsed.entity]
+  return ok(`Latest ${label}s:\n${lines}`, {
+    count: rows.length,
+    rows: rows.map((r) => Object.fromEntries(fields.map((k) => [k, r[k]]))),
+  })
+}
+
+/* ------------------------------ cancel / undo ------------------------------ */
+
+const CANCEL_TABLES = {
+  expense: 'expenses', invoice: 'invoices', leave_request: 'leave_requests',
+  purchase_order: 'purchase_orders', shipment: 'shipments',
+}
+const CANCEL_FINDERS = {
+  expenses: findExpense, invoices: findInvoice, leave_requests: findLeave,
+  purchase_orders: findPo, shipments: findShipment,
+}
+
+async function cancelRecord(user, parsed) {
+  const table = CANCEL_TABLES[parsed.entity]
+  if (!table) fail(`I can't cancel a ${parsed.entity.replace(/_/g, ' ')}.`)
+  const row = await CANCEL_FINDERS[table](user.company_id, parsed)
+  if (!row) fail('No matching record found to cancel.')
+  if (row.status === 'cancelled') fail('That record is already cancelled.')
+  if (row.status === 'approved') fail('That record is already approved — cancelling it needs an admin.')
+  await run(`UPDATE ${table} SET status = 'cancelled' WHERE id = ?`, [row.id])
+  const data = await get(`SELECT * FROM ${table} WHERE id = ?`, [row.id])
+  await sendToExternalSystem(parsed.department, { op: 'cancelRecord', data })
+  return ok(`Cancelled ${parsed.entity.replace(/_/g, ' ')} ${row.id.slice(0, 8)}.`, data)
+}
+
+const UNDO_TABLES = {
+  expense: 'expenses', invoice: 'invoices', leave_request: 'leave_requests',
+  purchase_order: 'purchase_orders', shipment: 'shipments', inventory_item: 'inventory_items',
+  quality_inspection: 'quality_inspections', quality_issue: 'quality_issues',
+}
+
+/** Reverse the user's most recent completed action. Returns { message, data }. */
+async function undoLastAction(user) {
+  const row = await get(
+    `SELECT * FROM workflow_actions WHERE user_id = ? AND company_id = ? AND status = 'completed'
+     AND action NOT IN ('query', 'undo', 'help')
+     ORDER BY created_at DESC LIMIT 1`,
+    [user.id, user.company_id]
+  )
+  if (!row) fail('Nothing to undo — you have no completed actions yet.')
+  const table = UNDO_TABLES[row.entity]
+  const label = `${row.action} ${String(row.entity).replace(/_/g, ' ')}`
+  if (!table || !row.entity_id) fail(`I can't automatically undo "${label}".`)
+  const record = await get(`SELECT * FROM ${table} WHERE id = ?`, [row.entity_id])
+  if (!record) fail(`The ${row.entity.replace(/_/g, ' ')} from "${label}" no longer exists.`)
+
+  if (row.action === 'create') {
+    await run(`DELETE FROM ${table} WHERE id = ?`, [row.entity_id])
+    return ok(`Undid "${label}" — the record was removed.`, { undone_action_id: row.id })
+  }
+  if (row.action === 'approve' || row.action === 'reject' || row.action === 'cancel') {
+    await run(`UPDATE ${table} SET status = 'pending' WHERE id = ?`, [row.entity_id])
+    return ok(`Undid "${label}" — it's pending again.`, { undone_action_id: row.id })
+  }
+  fail(`I can't automatically undo "${label}".`)
+}
+
 async function dispatch(user, parsed) {
   if (parsed.action === 'query') {
-    return ok(`Looked up ${parsed.entity} in ${parsed.department}`, { parsed })
+    if (parsed.entity === 'approvals') return queryApprovals(user)
+    return queryEntities(user, parsed)
+  }
+  if (parsed.action === 'cancel') {
+    return cancelRecord(user, parsed)
   }
   let fn = handlers[parsed.department]?.[parsed.entity]?.[parsed.action]
   if (!fn && parsed.entity === 'leave_request' && parsed.action === 'create' && parsed.fields?.onboard) {
@@ -364,6 +544,7 @@ module.exports = {
   handlers,
   dispatch,
   writeAction,
+  undoLastAction,
   financeHandlers,
   hrHandlers,
   procurementHandlers,

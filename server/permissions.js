@@ -30,7 +30,7 @@ function canExecute(user, parsed) {
     }
     return { ok: true, status: action === 'query' ? 'completed' : 'completed' }
   }
-  if (action === 'approve' || action === 'reject') {
+  if (action === 'approve' || action === 'reject' || action === 'cancel') {
     if (!canApprove(user)) {
       return { ok: false, reason: `Your ${user.role} role cannot ${action} ${parsed.entity} records.` }
     }

@@ -15,12 +15,12 @@ type Bubble = {
 }
 
 const SUGGESTIONS = [
-  "Approve Sarah's expense report for $200",
-  'Create a leave request for Priya next Friday',
-  'Reject the Apex Logistics invoice',
-  'Raise a purchase order for safety gloves, qty 40, $320',
-  'Create a shipment to Dallas DC',
-  'Log a quality issue for sensor drift',
+  'Show me pending approvals',
+  'File my $45 taxi expense',
+  'Book leave for next Friday',
+  'Raise a PO for safety gloves, qty 40, $320',
+  'Undo that',
+  'What can you do?',
 ]
 
 export function CommandCenter() {

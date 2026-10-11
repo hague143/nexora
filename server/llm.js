@@ -1,5 +1,6 @@
 const { randomUUID } = require('node:crypto')
 const { run, now } = require('./db')
+const { parseNaturalLanguage, getMissingSlots: _getMissingSlots } = require('./nlu')
 
 const HF_API_TOKEN = process.env.HF_API_TOKEN || ''
 const HF_MODEL = process.env.HF_MODEL || 'mistralai/Mistral-7B-Instruct-v0.3'
@@ -99,93 +100,16 @@ function isValidParsed(obj) {
   return true
 }
 
-function heuristicParse(command) {
-  const text = command.toLowerCase()
-  const dollar = command.match(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)/)
-  const qtyMatch = command.match(/\b(?:qty|quantity)\s*[:=]?\s*([0-9]+)/i)
-  const amountMatch = dollar || command.match(/\b([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\b/)
-  const amount = amountMatch ? Number(String(amountMatch[1]).replace(/,/g, '')) : null
-  const quantity = qtyMatch ? Number(qtyMatch[1]) : null
-  const personMatch =
-    command.match(/\b(?:approve|reject|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/) ||
-    command.match(/\b([A-Z][a-z]+(?:'s)?)\s+(?:expense|leave|invoice|report)/)
-  const person = personMatch ? personMatch[1].replace(/'s$/, '') : null
-
-  let action = 'query'
-  if (/\b(approve|ok|greenlight)\b/.test(text)) action = 'approve'
-  else if (/\b(reject|deny|decline)\b/.test(text)) action = 'reject'
-  else if (/\b(create|submit|file|open|raise|request|book|add|log|flag|onboard)\b/.test(text)) action = 'create'
-  else if (/\b(update|change|edit|set|ship|restock)\b/.test(text)) action = 'update'
-
-  let department = 'finance'
-  let entity = 'invoice'
-  if (/(leave|pto|vacation|time off|onboard|hire|\bhr\b)/.test(text)) {
-    department = 'hr'
-    entity = 'leave_request'
-  }
-  if (/(purchase order|\bpo\b|procure|supplier|buy )/.test(text)) {
-    department = 'procurement'
-    entity = 'purchase_order'
-  } else if (/(shipment|ship |carrier|tracking)/.test(text)) {
-    department = 'supply_chain'
-    entity = 'shipment'
-  } else if (/(inventory|stock|sku|warehouse)/.test(text)) {
-    department = 'supply_chain'
-    entity = 'inventory_item'
-  } else if (/(quality|defect|ncr|inspection)/.test(text)) {
-    department = 'quality'
-    entity = /issue|defect|ncr/.test(text) ? 'quality_issue' : 'quality_inspection'
-  } else if (/(expense|petty cash|reimburse)/.test(text)) {
-    department = 'finance'
-    entity = 'expense'
-  } else if (/(invoice)/.test(text)) {
-    department = 'finance'
-    entity = 'invoice'
-  }
-
-  const fields = {}
-  if (person) fields.person = person
-  if (amount != null && !Number.isNaN(amount) && dollar) fields.amount = amount
-  else if (amount != null && !Number.isNaN(amount) && entity !== 'purchase_order' && entity !== 'inventory_item') fields.amount = amount
-  if (dollar && entity === 'purchase_order') fields.amount = Number(String(dollar[1]).replace(/,/g, ''))
-  if (quantity != null) fields.quantity = quantity
-  if (entity === 'leave_request') {
-    if (/sick/.test(text)) fields.type = 'sick'
-    else if (/personal/.test(text)) fields.type = 'personal'
-    else fields.type = 'annual'
-  }
-  if (entity === 'purchase_order') {
-    const itemMatch = command.match(/(?:for|buy|order)\s+(.+?)(?:,\s*qty|\s+qty|$)/i)
-    if (itemMatch) fields.item = itemMatch[1].replace(/[.,]$/, '').trim()
-  }
-  if (entity === 'invoice' && person) fields.vendor = person
-  if (entity === 'expense' && person) fields.employee_name = person
-  if (entity === 'shipment') {
-    fields.destination = (command.match(/to\s+([A-Za-z0-9 .]+)/) || [])[1]?.trim() || 'Warehouse'
-  }
-  if (entity === 'inventory_item') {
-    fields.name = (command.match(/(?:stock|inventory|sku)\s+(?:of\s+)?([A-Za-z0-9 -]+)/i) || [])[1] || 'Item'
-    fields.quantity = quantity || amount || 0
-  }
-  if (entity === 'quality_issue') fields.title = command.replace(/^log (a )?quality issue (for )?/i, '').slice(0, 80) || command.slice(0, 80)
-  if (/onboard|hire/.test(text)) fields.onboard = true
-
-  let confidence = 0.55
-  if (action !== 'query') confidence += 0.15
-  if (fields.amount) confidence += 0.12
-  if (fields.person || fields.item || fields.vendor || fields.name || fields.destination) confidence += 0.12
-  if (/(expense|invoice|leave|purchase|po|onboard|ship|stock|quality)/.test(text)) confidence += 0.08
-  confidence = Math.min(0.96, Number(confidence.toFixed(2)))
-
-  return {
-    department,
-    action,
-    entity,
-    entity_id: null,
-    fields,
-    requires_approval: action === 'approve' || action === 'reject',
-    confidence,
-  }
+/**
+ * Heuristic parser — now powered by the smart rule-based NLU engine
+ * (server/nlu.js). No API key needed. Kept as the primary path when no
+ * HF_API_TOKEN is set, and as the fallback when the LLM call fails.
+ */
+function heuristicParse(command, user) {
+  const safeUser = user || { full_name: 'there', id: null }
+  const parsed = parseNaturalLanguage(command, safeUser)
+  const unclear = parsed.intent === 'unclear' || parsed.intent === 'empty'
+  return { ...parsed, _needsClarification: unclear }
 }
 
 async function logLlm({ userId, input, raw, parsedOk, retryCount, finalStatus }) {
@@ -197,7 +121,7 @@ async function logLlm({ userId, input, raw, parsedOk, retryCount, finalStatus })
 }
 
 async function parseCommandText(command, user) {
-  const heuristic = heuristicParse(command)
+  const heuristic = heuristicParse(command, user)
   if (!HF_API_TOKEN) {
     await logLlm({
       userId: user.id,
@@ -207,7 +131,7 @@ async function parseCommandText(command, user) {
       retryCount: 0,
       finalStatus: 'heuristic',
     })
-    return { parsed: heuristic, source: 'heuristic', retryCount: 0, needsClarification: heuristic.confidence < 0.7 }
+    return { parsed: heuristic, source: 'heuristic', retryCount: 0, needsClarification: Boolean(heuristic._needsClarification) }
   }
 
   const firstMessages = [
@@ -241,7 +165,7 @@ async function parseCommandText(command, user) {
       retryCount,
       finalStatus: 'hf_timeout_fallback',
     })
-    return { parsed: heuristic, source: 'heuristic', retryCount, needsClarification: heuristic.confidence < 0.7 }
+    return { parsed: heuristic, source: 'heuristic', retryCount, needsClarification: Boolean(heuristic._needsClarification) }
   }
 
   const ok = isValidParsed(parsed)
@@ -255,13 +179,13 @@ async function parseCommandText(command, user) {
   })
 
   if (!ok) {
-    return { parsed: heuristic, source: 'heuristic', retryCount, needsClarification: heuristic.confidence < 0.7 }
+    return { parsed: heuristic, source: 'heuristic', retryCount, needsClarification: Boolean(heuristic._needsClarification) }
   }
   return {
     parsed,
     source: 'huggingface',
     retryCount,
-    needsClarification: parsed.confidence < 0.7,
+    needsClarification: false,
   }
 }
 
