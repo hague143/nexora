@@ -130,6 +130,23 @@ async function main() {
     r = await req(base, 'PATCH', `/api/purchase-orders/${poId}`, { token: empToken, body: { status: 'approved' } })
     ok('employee cannot self-approve PO (403)', r.status === 403)
 
+    // 9. direct form creates appear in the company feed + notify the company
+    r = await req(base, 'POST', '/api/invoices', { token: empToken, body: { vendor: 'FeedVendor', amount: 77 } })
+    ok('direct invoice create ok', r.status === 201)
+    const feedInvId = r.data.id
+    let feed = (await req(base, 'GET', '/api/activity/company', { token: adminToken })).data
+    ok('feed shows direct invoice create', feed.some((x) => x.entity === 'invoice' && /FeedVendor/.test(x.summary || '')))
+    adminNotes = await notes(adminToken)
+    ok('company notified of direct create', adminNotes.some((x) => /FeedVendor/.test(x.message || '')))
+    r = await req(base, 'PATCH', `/api/invoices/${feedInvId}`, { token: adminToken, body: { status: 'approved' } })
+    ok('admin PATCH approve ok', r.status === 200)
+    feed = (await req(base, 'GET', '/api/activity/company', { token: adminToken })).data
+    ok('feed shows the page approval', feed.some((x) => x.action === 'update' && /Approved invoice for FeedVendor/.test(x.summary || '')))
+    r = await req(base, 'POST', '/api/expenses', { token: managerToken, body: { amount: 42, category: 'travel' } })
+    ok('manager direct expense ok', r.status === 201)
+    feed = (await req(base, 'GET', '/api/activity/company', { token: empToken })).data
+    ok("employee sees manager's activity in feed", feed.some((x) => x.entity === 'expense' && x.actor_name === 'Mia Manager'))
+
     console.log(`\nAll ${n} activity checks passed.`)
   } finally {
     server.close()

@@ -18,6 +18,33 @@ const {
 } = require('./org')
 const { runAllJobs } = require('./jobs')
 const { notify, notifyCompany } = require('./notifications/dispatcher')
+const { writeAction } = require('./handlers')
+
+/**
+ * Log a direct (page-form, non-command-bar) change as a workflow action so it
+ * shows up in the Company Feed, and broadcast it to the company bell.
+ */
+async function logDirectActivity(user, { action, entity, entityId, summary, fields = {}, title = 'New query' }) {
+  const parsed = { department: user.department || 'finance', action, entity, fields }
+  const row = await writeAction(user, parsed, 'completed', { entity_id: entityId, summary })
+  await notifyCompany(
+    user.company_id,
+    { type: 'activity', title, message: `${user.full_name}: ${summary}`, relatedActionId: row.id },
+    user.id
+  )
+  return row
+}
+
+/** Log an admin's approve/reject (or other status change) made from a department page. */
+async function logStatusChange(user, entity, entityId, label, from, to) {
+  if (!to || to === from) return
+  const verb = to === 'approved' ? 'Approved' : to === 'rejected' ? 'Rejected' : `Marked ${to}`
+  await logDirectActivity(user, {
+    action: 'update', entity, entityId,
+    summary: `${verb} ${label}`,
+    title: to === 'approved' ? 'Request approved' : to === 'rejected' ? 'Request rejected' : 'Status updated',
+  })
+}
 
 const app = express()
 const JWT_SECRET = process.env.JWT_SECRET || 'nexora-dev-secret-change-me'
@@ -583,6 +610,8 @@ app.post('/api/invoices', auth, async (req, res) => {
     `INSERT INTO invoices (id, company_id, vendor, amount, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
     [id, req.user.company_id, vendor, Number(amount), status || 'pending', now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'invoice', entityId: id,
+    summary: `Created invoice for ${vendor} ($${Number(amount)})`, fields: { vendor, amount: Number(amount) } })
   res.status(201).json(await get(`SELECT * FROM invoices WHERE id = ?`, [id]))
 })
 app.patch('/api/invoices/:id', auth, async (req, res) => {
@@ -595,6 +624,7 @@ app.patch('/api/invoices/:id', auth, async (req, res) => {
   const amount = req.body.amount != null ? Number(req.body.amount) : row.amount
   const status = req.body.status ?? row.status
   await run(`UPDATE invoices SET vendor = ?, amount = ?, status = ? WHERE id = ?`, [vendor, amount, status, row.id])
+  await logStatusChange(req.user, 'invoice', row.id, `invoice for ${row.vendor} ($${row.amount})`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM invoices WHERE id = ?`, [row.id]))
 })
 
@@ -606,6 +636,8 @@ app.post('/api/expenses', auth, async (req, res) => {
     `INSERT INTO expenses (id, company_id, employee_name, amount, category, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
     [id, req.user.company_id, employee_name || req.user.full_name, Number(amount || 0), category || 'general', now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'expense', entityId: id,
+    summary: `Filed $${Number(amount || 0)} ${category || 'general'} expense`, fields: { amount: Number(amount || 0) } })
   res.status(201).json(await get(`SELECT * FROM expenses WHERE id = ?`, [id]))
 })
 
@@ -619,6 +651,8 @@ app.post('/api/leave-requests', auth, async (req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
     [id, req.user.company_id, req.user.id, req.user.full_name, type, start_date, end_date]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'leave_request', entityId: id,
+    summary: `Requested ${type} leave (${start_date} to ${end_date})`, fields: { type } })
   res.status(201).json(await get(`SELECT * FROM leave_requests WHERE id = ?`, [id]))
 })
 app.patch('/api/leave-requests/:id', auth, async (req, res) => {
@@ -631,6 +665,7 @@ app.patch('/api/leave-requests/:id', auth, async (req, res) => {
     `UPDATE leave_requests SET type = ?, start_date = ?, end_date = ?, status = ? WHERE id = ?`,
     [req.body.type ?? row.type, req.body.start_date ?? row.start_date, req.body.end_date ?? row.end_date, req.body.status ?? row.status, row.id]
   )
+  await logStatusChange(req.user, 'leave_request', row.id, `${row.type} leave request`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM leave_requests WHERE id = ?`, [row.id]))
 })
 
@@ -643,6 +678,8 @@ app.post('/api/purchase-orders', auth, async (req, res) => {
     `INSERT INTO purchase_orders (id, company_id, item, quantity, amount, status) VALUES (?, ?, ?, ?, ?, 'pending')`,
     [id, req.user.company_id, item, Number(quantity), Number(amount)]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'purchase_order', entityId: id,
+    summary: `Created purchase order: ${item} x ${quantity} ($${Number(amount)})`, fields: { item, quantity: Number(quantity), amount: Number(amount) } })
   res.status(201).json(await get(`SELECT * FROM purchase_orders WHERE id = ?`, [id]))
 })
 app.patch('/api/purchase-orders/:id', auth, async (req, res) => {
@@ -655,6 +692,7 @@ app.patch('/api/purchase-orders/:id', auth, async (req, res) => {
     `UPDATE purchase_orders SET item = ?, quantity = ?, amount = ?, status = ? WHERE id = ?`,
     [req.body.item ?? row.item, req.body.quantity != null ? Number(req.body.quantity) : row.quantity, req.body.amount != null ? Number(req.body.amount) : row.amount, req.body.status ?? row.status, row.id]
   )
+  await logStatusChange(req.user, 'purchase_order', row.id, `purchase order ${row.item} x ${row.quantity}`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM purchase_orders WHERE id = ?`, [row.id]))
 })
 
@@ -667,12 +705,15 @@ app.post('/api/shipments', auth, async (req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, 'created', ?)`,
     [id, req.user.company_id, carrier || 'Internal', null, origin || 'HQ', destination || 'Customer', now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'shipment', entityId: id,
+    summary: `Created shipment to ${destination || 'Customer'}`, fields: { destination: destination || 'Customer' } })
   res.status(201).json(await get(`SELECT * FROM shipments WHERE id = ?`, [id]))
 })
 app.patch('/api/shipments/:id', auth, async (req, res) => {
   const row = await get(`SELECT * FROM shipments WHERE id = ? AND company_id = ?`, [req.params.id, req.user.company_id])
   if (!row) return res.status(404).json({ error: 'Not found' })
   await run(`UPDATE shipments SET status = ? WHERE id = ?`, [req.body.status ?? row.status, row.id])
+  await logStatusChange(req.user, 'shipment', row.id, `shipment to ${row.destination}`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM shipments WHERE id = ?`, [row.id]))
 })
 
@@ -687,6 +728,8 @@ app.post('/api/inventory', auth, async (req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, req.user.company_id, sku || `SKU-${id.slice(0, 6)}`, name || 'Item', qty, reorder, qty <= reorder ? 'low' : 'ok', now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'inventory_item', entityId: id,
+    summary: `Added ${name || 'Item'} to inventory (qty ${qty})`, fields: { name: name || 'Item', quantity: qty } })
   res.status(201).json(await get(`SELECT * FROM inventory_items WHERE id = ?`, [id]))
 })
 
@@ -699,6 +742,8 @@ app.post('/api/quality-inspections', auth, async (req, res) => {
      VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
     [id, req.user.company_id, lot || 'LOT', req.user.full_name, due_date || null, now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'quality_inspection', entityId: id,
+    summary: `Scheduled quality inspection for ${lot || 'LOT'}`, fields: { lot: lot || 'LOT' } })
   res.status(201).json(await get(`SELECT * FROM quality_inspections WHERE id = ?`, [id]))
 })
 app.patch('/api/quality-inspections/:id', auth, async (req, res) => {
@@ -709,6 +754,7 @@ app.patch('/api/quality-inspections/:id', auth, async (req, res) => {
     req.body.result ?? row.result,
     row.id,
   ])
+  await logStatusChange(req.user, 'quality_inspection', row.id, `inspection ${row.lot}`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM quality_inspections WHERE id = ?`, [row.id]))
 })
 
@@ -720,12 +766,15 @@ app.post('/api/quality-issues', auth, async (req, res) => {
     `INSERT INTO quality_issues (id, company_id, title, severity, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)`,
     [id, req.user.company_id, title || 'Issue', severity || 'medium', now()]
   )
+  await logDirectActivity(req.user, { action: 'create', entity: 'quality_issue', entityId: id,
+    summary: `Reported quality issue: ${title || 'Issue'} (${severity || 'medium'})`, fields: { title: title || 'Issue' } })
   res.status(201).json(await get(`SELECT * FROM quality_issues WHERE id = ?`, [id]))
 })
 app.patch('/api/quality-issues/:id', auth, async (req, res) => {
   const row = await get(`SELECT * FROM quality_issues WHERE id = ? AND company_id = ?`, [req.params.id, req.user.company_id])
   if (!row) return res.status(404).json({ error: 'Not found' })
   await run(`UPDATE quality_issues SET status = ? WHERE id = ?`, [req.body.status ?? row.status, row.id])
+  await logStatusChange(req.user, 'quality_issue', row.id, `issue "${row.title}"`, row.status, req.body.status)
   res.json(await get(`SELECT * FROM quality_issues WHERE id = ?`, [row.id]))
 })
 
