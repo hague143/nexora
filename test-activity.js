@@ -54,6 +54,11 @@ async function main() {
       body: { email: 'pete@initech.test', password: 'password123', full_name: 'Pete Employee' },
     })
     const empToken = r.data.token
+    await createInvites({ id: admin.id, company_id: admin.company_id }, { emails: ['mia@initech.test'], role: 'manager', department: 'finance' })
+    r = await req(base, 'POST', '/api/auth/signup', {
+      body: { email: 'mia@initech.test', password: 'password123', full_name: 'Mia Manager' },
+    })
+    const managerToken = r.data.token
 
     // 1. employee runs a command → actor gets personal note, admin gets broadcast
     r = await req(base, 'POST', '/api/command', { token: empToken, body: { text: 'file my $30 taxi expense' } })
@@ -103,6 +108,15 @@ async function main() {
     ok('requester notified of rejection with reason', empNotes.some((x) => x.title === 'Request rejected' && /duplicate vendor/.test(x.message)))
     r = await req(base, 'GET', '/api/approvals/decided', { token: adminToken })
     ok('decided history has both', r.data.length === 2)
+
+    // 7. only admins can decide — manager gets 403
+    r = await req(base, 'POST', '/api/command', { token: empToken, body: { text: 'create an invoice for MidCo, $3000' } })
+    ok('third request pending', r.data.status === 'pending_approval')
+    const item3 = (await req(base, 'GET', '/api/approvals/pending', { token: adminToken })).data[0].id
+    r = await req(base, 'POST', `/api/approvals/${item3}/approve`, { token: managerToken, body: {} })
+    ok('manager cannot approve (403)', r.status === 403)
+    r = await req(base, 'POST', `/api/approvals/${item3}/approve`, { token: adminToken, body: {} })
+    ok('admin can still approve', r.status === 200)
 
     console.log(`\nAll ${n} activity checks passed.`)
   } finally {

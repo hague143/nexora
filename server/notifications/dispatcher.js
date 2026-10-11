@@ -53,12 +53,11 @@ async function notifyCompanyManagers(companyId, extra, notification) {
  */
 async function notifyCompany(companyId, notification, excludeUserId = null) {
   const { all } = require('../db')
-  const members = await all(
-    `SELECT id FROM users WHERE company_id = ? AND (status IS NULL OR status = 'active')`,
-    [companyId]
-  )
+  // status column exists only after migration 0004; treat a missing value as active.
+  const members = await all(`SELECT * FROM users WHERE company_id = ?`, [companyId])
   for (const m of members) {
     if (excludeUserId && m.id === excludeUserId) continue
+    if (m.status != null && m.status !== 'active') continue
     await notify(m.id, { ...notification, companyId })
   }
 }

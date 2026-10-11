@@ -11,7 +11,7 @@ type Item = WorkflowAction & { actor_name?: string; fields?: Record<string, unkn
 
 export function Approvals() {
   const { user } = useAuth()
-  const canDecide = user?.role === 'admin' || user?.role === 'manager'
+  const canDecide = user?.role === 'admin'
   const [pending, setPending] = useState<Item[]>([])
   const [decided, setDecided] = useState<Item[]>([])
   const [reasons, setReasons] = useState<Record<string, string>>({})
@@ -92,7 +92,7 @@ export function Approvals() {
                 </div>
               </>
             ) : (
-              <p className="text-xs text-amber-700">Waiting for a manager to review.</p>
+              <p className="text-xs text-amber-700">Waiting for an admin to review.</p>
             )}
           </Card>
         ))}
@@ -109,7 +109,7 @@ export function Approvals() {
               <div>
                 <p className="text-sm font-medium">{r.summary || `${r.action} ${r.entity}`}</p>
                 <p className="mt-1 text-xs text-slate-500">
-                  {r.actor_name} · {wasApproved ? 'approved' : 'rejected'} by {decidedBy || 'a manager'} · {formatDate(r.resolved_at || r.created_at)}
+                  {r.actor_name} · {wasApproved ? 'approved' : 'rejected'} by {decidedBy || 'an admin'} · {formatDate(r.resolved_at || r.created_at)}
                   {typeof r.fields?.rejection_reason === 'string' && r.fields.rejection_reason && (
                     <> · “{r.fields.rejection_reason}”</>
                   )}

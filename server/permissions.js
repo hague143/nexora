@@ -1,4 +1,4 @@
-const APPROVE_ROLES = new Set(['admin', 'manager'])
+const APPROVE_ROLES = new Set(['admin'])
 const EXPENSE_MANAGER_LIMIT = 5000
 
 function canApprove(user) {
