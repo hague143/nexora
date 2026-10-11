@@ -11,6 +11,7 @@ import { SettingsPage } from '@/pages/app/Settings'
 import { Insights } from '@/pages/app/Insights'
 import { CompanyFeed } from '@/pages/app/CompanyFeed'
 import { Approvals } from '@/pages/app/Approvals'
+import { AdminPanel } from '@/pages/app/Admin'
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="supply" element={<SupplyPage />} />
             <Route path="quality" element={<QualityPage />} />
             <Route path="activity" element={<ActivityLog />} />
+            <Route path="admin" element={<AdminPanel />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

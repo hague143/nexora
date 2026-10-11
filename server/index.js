@@ -3,12 +3,14 @@
 require('./env')
 const app = require('./app')
 const { ensureSeeded } = require('./seed')
+const { ensureOrgTables } = require('./org')
 const { startJobs } = require('./jobs')
 
 const PORT = process.env.PORT || 3001
 
 async function main() {
   await ensureSeeded()
+  await ensureOrgTables()
   startJobs()
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Nexora API listening on ${PORT}`)

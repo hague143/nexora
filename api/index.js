@@ -3,12 +3,14 @@
 // every /api/* request lands here.
 const app = require('../server/app')
 const { ensureSeeded } = require('../server/seed')
+const { ensureOrgTables } = require('../server/org')
 
 let seeded = false
 
 module.exports = async (req, res) => {
   if (!seeded) {
     await ensureSeeded()
+    await ensureOrgTables()
     seeded = true
   }
   return app(req, res)

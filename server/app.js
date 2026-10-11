@@ -11,6 +11,11 @@ const { randomUUID } = require('node:crypto')
 const { get, run, many, all, now, rowJson } = require('./db')
 const { processCommand } = require('./command')
 const { canManageRoles, canApprove, departmentScope } = require('./permissions')
+const {
+  ensureOrgTables, requireAdmin, findPendingInvite, findInviteByToken, acceptInvite,
+  createInvites, listInvites, revokeInvite, createJoinRequest, listRequests,
+  approveRequest, rejectRequest, listMembers, updateMember, removeMember,
+} = require('./org')
 const { runAllJobs } = require('./jobs')
 const { notify } = require('./notifications/dispatcher')
 
@@ -52,11 +57,26 @@ async function auth(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET)
     const user = await get(`SELECT * FROM users WHERE id = ?`, [payload.sub])
     if (!user) return res.status(401).json({ error: 'Unauthorized' })
+    if (user.status === 'deactivated') return res.status(403).json({ error: 'This account has been deactivated.' })
     req.user = user
     next()
   } catch {
     return res.status(401).json({ error: 'Unauthorized' })
   }
+}
+
+// Light IP-based rate limit for public endpoints (signup/request flows).
+const publicBuckets = new Map()
+function publicRateLimit(req, res, next) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown'
+  const windowMs = 3600_000
+  const max = 20
+  const entry = publicBuckets.get(ip) || { count: 0, start: Date.now() }
+  if (Date.now() - entry.start > windowMs) { entry.count = 0; entry.start = Date.now() }
+  entry.count += 1
+  publicBuckets.set(ip, entry)
+  if (entry.count > max) return res.status(429).json({ error: 'Too many requests. Try again later.' })
+  next()
 }
 
 async function scoped(table, user, extra = '') {
@@ -74,68 +94,193 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, product: 'Nexora' })
 })
 
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/signup', publicRateLimit, async (req, res) => {
+  await ensureOrgTables()
   const { email, password, full_name, company_name, department } = req.body || {}
   if (!email || !password || !full_name) {
     return res.status(400).json({ error: 'Email, password, and full name are required.' })
   }
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' })
-  if (await get(`SELECT id FROM users WHERE email = ?`, [String(email).toLowerCase()])) {
+  const emailLc = String(email).toLowerCase()
+  if (await get(`SELECT id FROM users WHERE email = ?`, [emailLc])) {
     return res.status(409).json({ error: 'An account with this email already exists.' })
   }
   const t = now()
-  const companyId = randomUUID()
-  await run(`INSERT INTO companies (id, name, industry, created_at) VALUES (?, ?, 'General', ?)`, [
-    companyId,
-    company_name || `${full_name.split(' ')[0]}'s Workspace`,
-    t,
-  ])
-  const userId = randomUUID()
-  await run(
-    `INSERT INTO users (id, email, password_hash, full_name, company_id, department, role, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'admin', ?)`,
-    [userId, String(email).toLowerCase(), bcrypt.hashSync(password, 10), full_name, companyId, department || 'finance', t]
-  )
-  const user = await get(`SELECT * FROM users WHERE id = ?`, [userId])
-  res.status(201).json({ token: signToken(user), user: publicUser(user) })
+  // 1. Invited employee → joins the inviting company with the invited role.
+  const invite = await findPendingInvite(emailLc)
+  if (invite) {
+    const userId = randomUUID()
+    await run(
+      `INSERT INTO users (id, email, password_hash, full_name, company_id, department, role, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+      [userId, emailLc, bcrypt.hashSync(password, 10), full_name, invite.company_id, invite.department, invite.role, t]
+    )
+    await acceptInvite(invite)
+    const user = await get(`SELECT * FROM users WHERE id = ?`, [userId])
+    return res.status(201).json({ token: signToken(user), user: publicUser(user) })
+  }
+  // 2. Founder → creates a new company as its admin.
+  if (company_name && String(company_name).trim()) {
+    const companyId = randomUUID()
+    await run(`INSERT INTO companies (id, name, industry, created_at) VALUES (?, ?, 'General', ?)`, [
+      companyId,
+      String(company_name).trim(),
+      t,
+    ])
+    const userId = randomUUID()
+    await run(
+      `INSERT INTO users (id, email, password_hash, full_name, company_id, department, role, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'admin', 'active', ?)`,
+      [userId, emailLc, bcrypt.hashSync(password, 10), full_name, companyId, department || 'finance', t]
+    )
+    const user = await get(`SELECT * FROM users WHERE id = ?`, [userId])
+    return res.status(201).json({ token: signToken(user), user: publicUser(user) })
+  }
+  // 3. Nobody else gets in.
+  return res.status(403).json({
+    error: 'This email has not been invited to a Nexora workspace. Ask your company admin for an invite, or request access below.',
+    code: 'NOT_INVITED',
+  })
 })
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', publicRateLimit, async (req, res) => {
   const { email, password } = req.body || {}
   const user = await get(`SELECT * FROM users WHERE email = ?`, [String(email || '').toLowerCase()])
   if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password.' })
   }
+  if (user.status === 'deactivated') {
+    return res.status(403).json({ error: 'This account has been deactivated. Contact your company admin.' })
+  }
   res.json({ token: signToken(user), user: publicUser(user) })
 })
 
-app.post('/api/auth/google', async (req, res) => {
+app.post('/api/auth/google', publicRateLimit, async (req, res) => {
+  await ensureOrgTables()
   const { email, full_name } = req.body || {}
   if (!email) return res.status(400).json({ error: 'Email is required.' })
-  let user = await get(`SELECT * FROM users WHERE email = ?`, [String(email).toLowerCase()])
-  if (!user) {
-    const t = now()
-    const companyId = randomUUID()
-    const name = full_name || email.split('@')[0]
-    await run(`INSERT INTO companies (id, name, industry, created_at) VALUES (?, ?, 'General', ?)`, [
-      companyId,
-      `${name.split(' ')[0]}'s Workspace`,
-      t,
-    ])
-    const userId = randomUUID()
-    await run(
-      `INSERT INTO users (id, email, password_hash, full_name, company_id, department, role, created_at)
-       VALUES (?, ?, ?, ?, ?, 'finance', 'admin', ?)`,
-      [userId, String(email).toLowerCase(), bcrypt.hashSync(randomUUID(), 10), name, companyId, t]
-    )
-    user = await get(`SELECT * FROM users WHERE id = ?`, [userId])
+  const emailLc = String(email).toLowerCase()
+  let user = await get(`SELECT * FROM users WHERE email = ?`, [emailLc])
+  if (user) {
+    if (user.status === 'deactivated') {
+      return res.status(403).json({ error: 'This account has been deactivated. Contact your company admin.' })
+    }
+    return res.json({ token: signToken(user), user: publicUser(user) })
   }
+  // No more open account creation: join only via a pending invite.
+  const invite = await findPendingInvite(emailLc)
+  if (!invite) {
+    return res.status(403).json({
+      error: 'This email has not been invited to a Nexora workspace. Ask your company admin for an invite.',
+      code: 'NOT_INVITED',
+    })
+  }
+  const t = now()
+  const userId = randomUUID()
+  const name = full_name || emailLc.split('@')[0]
+  await run(
+    `INSERT INTO users (id, email, password_hash, full_name, company_id, department, role, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+    [userId, emailLc, bcrypt.hashSync(randomUUID(), 10), name, invite.company_id, invite.department, invite.role, t]
+  )
+  await acceptInvite(invite)
+  user = await get(`SELECT * FROM users WHERE id = ?`, [userId])
   res.json({ token: signToken(user), user: publicUser(user) })
 })
 
 app.get('/api/me', auth, async (req, res) => {
   const company = await get(`SELECT * FROM companies WHERE id = ?`, [req.user.company_id])
   res.json({ user: publicUser(req.user), company })
+})
+
+/* ------------------------- organization access API ------------------------ */
+
+// Public: look up an invite by token (prefills the signup form).
+app.get('/api/access/invite/:token', publicRateLimit, async (req, res) => {
+  await ensureOrgTables()
+  const invite = await findInviteByToken(req.params.token)
+  if (!invite) return res.status(404).json({ error: 'Invite not found or expired.' })
+  const company = await get(`SELECT name FROM companies WHERE id = ?`, [invite.company_id])
+  res.json({
+    email: invite.email, role: invite.role, department: invite.department,
+    company_name: company ? company.name : 'your company',
+  })
+})
+
+// Public: request access to a company's workspace.
+app.post('/api/access/request', publicRateLimit, async (req, res) => {
+  await ensureOrgTables()
+  try {
+    const result = await createJoinRequest(req.body || {})
+    res.status(201).json({
+      message: result.company_found
+        ? 'Request sent. Your admin will review it shortly.'
+        : 'Request sent. We could not find that company — an admin can still pick it up.',
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Admin: team members
+app.get('/api/admin/members', auth, requireAdmin, async (req, res) => {
+  res.json({ members: await listMembers(req.user.company_id) })
+})
+app.patch('/api/admin/members/:id', auth, requireAdmin, async (req, res) => {
+  try {
+    res.json({ member: await updateMember(req.user, req.params.id, req.body || {}) })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+app.delete('/api/admin/members/:id', auth, requireAdmin, async (req, res) => {
+  try {
+    res.json({ member: await removeMember(req.user, req.params.id) })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Admin: invites
+app.get('/api/admin/invites', auth, requireAdmin, async (req, res) => {
+  res.json({ invites: await listInvites(req.user.company_id) })
+})
+app.post('/api/admin/invites', auth, requireAdmin, async (req, res) => {
+  try {
+    const created = await createInvites(req.user, req.body || {})
+    res.status(201).json({ invites: created })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+app.delete('/api/admin/invites/:id', auth, requireAdmin, async (req, res) => {
+  try {
+    await revokeInvite(req.user.company_id, req.params.id)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Admin: join requests
+app.get('/api/admin/requests', auth, requireAdmin, async (req, res) => {
+  res.json({ requests: await listRequests(req.user) })
+})
+app.post('/api/admin/requests/:id/approve', auth, requireAdmin, async (req, res) => {
+  try {
+    const invite = await approveRequest(req.user, req.params.id, req.body || {})
+    res.json({ invite })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+app.post('/api/admin/requests/:id/reject', auth, requireAdmin, async (req, res) => {
+  try {
+    await rejectRequest(req.user, req.params.id)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 app.post('/api/demo-requests', async (req, res) => {

@@ -1,6 +1,6 @@
 import { NavLink, Navigate, Outlet, useNavigate } from 'react-router-dom'
 import {
-  Activity, BarChart3, Bell, CheckSquare, Command, LayoutDashboard, LogOut,
+  Activity, BarChart3, Bell, CheckSquare, Command, LayoutDashboard, Lock, LogOut,
   Package, Search, Settings, ShieldCheck, ShoppingCart, Truck, Users, Wallet,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
@@ -29,6 +29,14 @@ export function AppLayout() {
   const [notesOpen, setNotesOpen] = useState(false)
   const [notes, setNotes] = useState<NotificationItem[]>([])
   const [query, setQuery] = useState('')
+
+  const navLinks = useMemo(() => {
+    const base = [...links]
+    if (user?.role === 'admin') {
+      base.splice(1, 0, { to: '/app/admin', label: 'Admin', icon: Lock })
+    }
+    return base
+  }, [user?.role])
 
   useEffect(() => {
     if (!user) return
@@ -62,7 +70,7 @@ export function AppLayout() {
   return (
     <div className="flex min-h-screen bg-slate-50">
       <nav className="fixed bottom-0 left-0 right-0 z-30 flex overflow-x-auto border-t border-slate-200 bg-white px-1 py-2 md:hidden">
-        {links.slice(0, 6).map((l) => (
+        {navLinks.slice(0, 6).map((l) => (
           <NavLink
             key={l.to}
             to={l.to}
@@ -82,7 +90,7 @@ export function AppLayout() {
           Nexora
         </div>
         <nav className="flex-1 space-y-1 overflow-auto p-3">
-          {links.map((l) => (
+          {navLinks.map((l) => (
             <NavLink
               key={l.to}
               to={l.to}
