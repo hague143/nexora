@@ -24,9 +24,9 @@ const { writeAction } = require('./handlers')
  * Log a direct (page-form, non-command-bar) change as a workflow action so it
  * shows up in the Company Feed, and broadcast it to the company bell.
  */
-async function logDirectActivity(user, { action, entity, entityId, summary, fields = {}, title = 'New query' }) {
+async function logDirectActivity(user, { action, entity, entityId, summary, fields = {}, title = 'New query', status = 'completed' }) {
   const parsed = { department: user.department || 'finance', action, entity, fields }
-  const row = await writeAction(user, parsed, 'completed', { entity_id: entityId, summary })
+  const row = await writeAction(user, parsed, status, { entity_id: entityId, summary })
   await notifyCompany(
     user.company_id,
     { type: 'activity', title, message: `${user.full_name}: ${summary}`, relatedActionId: row.id },
@@ -39,10 +39,13 @@ async function logDirectActivity(user, { action, entity, entityId, summary, fiel
 async function logStatusChange(user, entity, entityId, label, from, to) {
   if (!to || to === from) return
   const verb = to === 'approved' ? 'Approved' : to === 'rejected' ? 'Rejected' : `Marked ${to}`
+  const decided = to === 'approved' || to === 'rejected'
   await logDirectActivity(user, {
     action: 'update', entity, entityId,
     summary: `${verb} ${label}`,
     title: to === 'approved' ? 'Request approved' : to === 'rejected' ? 'Request rejected' : 'Status updated',
+    fields: decided ? { decided_by: user.full_name, decided: to } : {},
+    status: to === 'approved' ? 'completed' : to === 'rejected' ? 'rejected' : 'completed',
   })
 }
 
@@ -447,16 +450,15 @@ app.get('/api/approvals/pending', auth, async (req, res) => {
 })
 
 app.get('/api/approvals/decided', auth, async (req, res) => {
-  const scope = canApprove(req.user) ? '' : 'AND a.user_id = ?'
-  const params = canApprove(req.user) ? [req.user.company_id] : [req.user.company_id, req.user.id]
+  // Decision history is shared company-wide: everyone sees what was decided.
   res.json(
     await many(
       `SELECT a.*, u.full_name AS actor_name
        FROM workflow_actions a
        JOIN users u ON u.id = a.user_id
-       WHERE a.company_id = ? AND a.fields LIKE '%"decided_by"%' ${scope}
+       WHERE a.company_id = ? AND a.fields LIKE '%"decided_by"%'
        ORDER BY a.resolved_at DESC LIMIT 20`,
-      params
+      [req.user.company_id]
     )
   )
 })

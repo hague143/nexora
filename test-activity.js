@@ -147,6 +147,17 @@ async function main() {
     feed = (await req(base, 'GET', '/api/activity/company', { token: empToken })).data
     ok("employee sees manager's activity in feed", feed.some((x) => x.entity === 'expense' && x.actor_name === 'Mia Manager'))
 
+    // 10. page-based admin decisions appear in everyone's Approvals history
+    r = await req(base, 'POST', '/api/invoices', { token: empToken, body: { vendor: 'PageDecision', amount: 10 } })
+    const pdId = r.data.id
+    r = await req(base, 'PATCH', `/api/invoices/${pdId}`, { token: adminToken, body: { status: 'rejected' } })
+    ok('admin page-reject ok', r.status === 200)
+    for (const [who, tok] of [['admin', adminToken], ['manager', managerToken], ['employee', empToken]]) {
+      r = await req(base, 'GET', '/api/approvals/decided', { token: tok })
+      const seen = r.data.some((x) => /PageDecision/.test(x.summary || '') && x.status === 'rejected')
+      ok(`${who} sees the page decision in Approvals`, seen)
+    }
+
     console.log(`\nAll ${n} activity checks passed.`)
   } finally {
     server.close()

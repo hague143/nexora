@@ -29,6 +29,7 @@ export function AppLayout() {
   const [notesOpen, setNotesOpen] = useState(false)
   const [notes, setNotes] = useState<NotificationItem[]>([])
   const [query, setQuery] = useState('')
+  const [pendingCount, setPendingCount] = useState(0)
 
   const navLinks = useMemo(() => {
     const base = [...links]
@@ -44,6 +45,17 @@ export function AppLayout() {
     const id = window.setInterval(() => {
       api<NotificationItem[]>('/api/notifications').then(setNotes).catch(() => {})
     }, 15000)
+    return () => window.clearInterval(id)
+  }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    const loadPending = () =>
+      api<{ id: string }[]>('/api/approvals/pending')
+        .then((r) => setPendingCount(r.length))
+        .catch(() => {})
+    loadPending()
+    const id = window.setInterval(loadPending, 30000)
     return () => window.clearInterval(id)
   }, [user])
 
@@ -79,7 +91,14 @@ export function AppLayout() {
               cn('flex min-w-[4.5rem] flex-1 flex-col items-center gap-1 px-1 text-[10px] font-medium', isActive ? 'text-indigo-700' : 'text-slate-500')
             }
           >
-            <l.icon className="h-4 w-4" />
+            <span className="relative">
+              <l.icon className="h-4 w-4" />
+              {l.to === '/app/approvals' && pendingCount > 0 && (
+                <span className="absolute -right-2 -top-1 rounded-full bg-amber-500 px-1 text-[9px] font-bold leading-tight text-white">
+                  {pendingCount}
+                </span>
+              )}
+            </span>
             {l.label.split(' ')[0]}
           </NavLink>
         ))}
@@ -104,6 +123,11 @@ export function AppLayout() {
             >
               <l.icon className="h-4 w-4" />
               {l.label}
+              {l.to === '/app/approvals' && pendingCount > 0 && (
+                <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                  {pendingCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
