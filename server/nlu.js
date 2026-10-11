@@ -72,7 +72,7 @@ function extractQuantity(text) {
 
 /**
  * today · tomorrow · day after tomorrow · next/this <weekday> · in N days/weeks
- * on Oct 20 · October 20 · 20 Oct · end of month  →  'YYYY-MM-DD'
+ * on Oct 20 · October 20 · 20 Oct · end of month · 2026-12-20  →  'YYYY-MM-DD'
  */
 function extractDate(text, ref = new Date()) {
   const t = normalize(text)
@@ -80,7 +80,16 @@ function extractDate(text, ref = new Date()) {
   if (/\bday after tomorrow\b/.test(t)) return toISODate(addDays(ref, 2))
   if (/\btomorrow\b/.test(t)) return toISODate(addDays(ref, 1))
 
-  let m = t.match(/\b(next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/)
+  // ISO dates: 2026-12-20
+  let m = t.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/)
+  if (m) {
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10)
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${m[1]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    }
+  }
+
+  m = t.match(/\b(next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/)
   if (m) {
     const target = WEEKDAYS.indexOf(m[2])
     let delta = (target - ref.getDay() + 7) % 7
@@ -175,7 +184,7 @@ function extractDestination(text) {
 
 function extractItem(text) {
   const t = String(text)
-  const m = t.match(/\b(?:for|of|order)\s+([a-z][a-z0-9 ,.'-]{2,50}?)(?:,|\s+qty|\s+quantity|\s+x\d+|\s+\$|\s+\d+\s*(?:dollars?|usd)|\s*$)/i)
+  const m = t.match(/\b(?:for|of|order)\s+([a-z0-9][a-z0-9 ,.'-]{2,50}?)(?:,|\s+qty|\s+quantity|\s+x\d+|\s+\$|\s+\d+\s*(?:dollars?|usd)|\s*$)/i)
   if (m) {
     const item = m[1].trim().replace(/^(the|a|an)\s+/i, '')
     if (item && !/^(purchase|po)\b/i.test(item)) return item
@@ -200,7 +209,7 @@ const ENTITY_KEYWORDS = {
   expense: ['expense', 'expenses', 'petty cash', 'reimburse', 'reimbursement'],
   invoice: ['invoice', 'invoices', 'invoiced', 'bill', 'bills', 'vendor payment'],
   leave_request: ['leave', 'pto', 'vacation', 'time off', 'day off', 'sick day', 'holiday'],
-  purchase_order: ['purchase order', 'purchase orders', '\\bpo\\b', 'pos\\b', 'procure', 'supplier order'],
+  purchase_order: ['purchase order', 'purchase orders', '\\bpo\\b', 'pos\\b', 'procure', 'supplier order', '\\border\\b'],
   shipment: ['shipment', 'shipments', 'carrier', 'tracking', 'delivery', 'deliveries', 'freight', 'parcel'],
   inventory_item: ['inventory', 'stock', 'sku', 'warehouse', 'inventory item'],
   quality_inspection: ['inspection', 'inspections', 'lot check'],
@@ -420,6 +429,10 @@ function buildFields(t, rawText, entity, action, user) {
   }
   if (entity === 'leave_request') {
     if (date) { f.date = date; f.start_date = date; f.end_date = date }
+    const isoRange = rawText.match(/\b(\d{4}-\d{1,2}-\d{1,2})\s*(?:-|to)\s*(\d{4}-\d{1,2}-\d{1,2})\b/i)
+    if (isoRange) {
+      f.start_date = isoRange[1]; f.end_date = isoRange[2]; f.date = isoRange[1]
+    }
     const range = rawText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:-|to)\s*(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*/i)
     if (range) {
       const mon = MONTHS[range[3].toLowerCase().slice(0, 3)]
@@ -430,11 +443,12 @@ function buildFields(t, rawText, entity, action, user) {
   }
   if (entity === 'purchase_order') {
     const item = extractItem(rawText)
-    if (item) f.item = item
-    if (quantity == null && amount == null) {
-      // bare number like "order 40 gloves" → likely quantity
-      const bare = rawText.match(/\b(\d+)\s+[a-z]/i)
-      if (bare && !/\$/.test(rawText)) f.quantity = parseInt(bare[1], 10)
+    if (item) f.item = item.replace(/^(for|of|the|a|an)\s+/i, '').replace(/^\d+\s+/, '').trim() || item
+    if (quantity == null) {
+      // bare number like "order 40 gloves" or "20 laptops, $24000" → likely quantity
+      // (number right after $ is money, not a quantity)
+      const bare = rawText.match(/(?<!\$)\b(\d+)\s+[a-z]/i)
+      if (bare) f.quantity = parseInt(bare[1], 10)
     }
   }
   if (entity === 'shipment') {
@@ -455,12 +469,12 @@ function buildFields(t, rawText, entity, action, user) {
     if (toQty && quantity == null) f.quantity = parseInt(toQty[1], 10)
   }
   if (entity === 'quality_issue') {
-    const title = rawText.replace(/^(log|create|file|report)\s+(a\s+)?quality\s+issue\s+(for\s+|about\s+)?/i, '').trim()
+    const title = rawText.replace(/^(log|create|file|report)\s+(a\s+)?quality\s+issue:?\s+(for\s+|about\s+)?/i, '').trim()
     if (title && title.length > 3) f.title = title.slice(0, 80)
   }
   if (entity === 'quality_inspection') {
-    const lot = rawText.match(/\blot\s+([A-Za-z0-9-]+)/i)
-    if (lot) f.lot = lot[1]
+    const lot = rawText.match(/\b(lot[\s-]*[A-Za-z0-9-]+)/i)
+    if (lot) f.lot = lot[1].toUpperCase().replace(/\s+/, '-')
     if (date) f.due_date = date
   }
   return f

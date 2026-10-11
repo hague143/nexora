@@ -119,5 +119,32 @@ check('slot fill: free-text vendor answer', () => {
   assert.strictEqual(nlu.extractSlotValue('next Friday', 'date', user), nlu.extractDate('next Friday'))
   assert.strictEqual(nlu.extractSlotValue('Raise a PO for gloves', 'vendor', user), null, 'command-like text rejected')
 })
+check('PO: quantity + item from "20 laptops, $24000"', () => {
+  const p = nlu.parseNaturalLanguage('create a purchase order for 20 laptops, $24000', user)
+  assert.strictEqual(p.entity, 'purchase_order')
+  assert.strictEqual(p.fields.quantity, 20)
+  assert.strictEqual(p.fields.item, 'laptops')
+  assert.strictEqual(p.fields.amount, 24000)
+})
+check('PO: bare "order 40 safety gloves"', () => {
+  const p = nlu.parseNaturalLanguage('order 40 safety gloves', user)
+  assert.strictEqual(p.entity, 'purchase_order')
+  assert.strictEqual(p.fields.quantity, 40)
+  assert.strictEqual(p.fields.item, 'safety gloves')
+})
+check('quality inspection: LOT-99 kept intact', () => {
+  const p = nlu.parseNaturalLanguage('schedule a quality inspection for LOT-99', user)
+  assert.strictEqual(p.entity, 'quality_inspection')
+  assert.strictEqual(p.fields.lot, 'LOT-99')
+})
+check('ISO dates: leave 2026-12-20 to 2026-12-25', () => {
+  const p = nlu.parseNaturalLanguage('request annual leave from 2026-12-20 to 2026-12-25', user)
+  assert.strictEqual(p.entity, 'leave_request')
+  assert.strictEqual(p.fields.start_date, '2026-12-20')
+  assert.strictEqual(p.fields.end_date, '2026-12-25')
+})
+check('ISO single date', () => {
+  assert.strictEqual(nlu.extractDate('invoice due 2026-03-05'), '2026-03-05')
+})
 
 console.log(`\n${passed} unit checks passed${process.exitCode ? ' (WITH FAILURES)' : ''}`)
