@@ -5,7 +5,7 @@ const {
 } = require('./nlu')
 const { canExecute, approvalRequired, canApprove } = require('./permissions')
 const { dispatch, writeAction, undoLastAction } = require('./handlers')
-const { notify, notifyCompanyManagers } = require('./notifications/dispatcher')
+const { notify, notifyCompany } = require('./notifications/dispatcher')
 const { rowJson, run, get, now } = require('./db')
 
 const buckets = new Map()
@@ -90,6 +90,23 @@ function applySlot(parsed, slot, value) {
 
 function isCancelText(text) {
   return /\b(cancel|stop|forget it|never mind)\b/i.test(String(text || ''))
+}
+
+/** Actions that change company state (worth broadcasting to the team). */
+const BROADCAST_ACTIONS = new Set(['create', 'update', 'approve', 'reject', 'cancel', 'undo'])
+
+async function broadcastActivity(user, parsed, message, type = 'activity', title = 'New query') {
+  if (!BROADCAST_ACTIONS.has(parsed.action)) return
+  await notifyCompany(
+    user.company_id,
+    {
+      type,
+      title,
+      message: `${user.full_name}: ${message}`,
+      relatedActionId: null,
+    },
+    user.id // actor already got a personal notification
+  )
 }
 
 /**
@@ -205,6 +222,13 @@ async function processCommand(user, text) {
         companyId: user.company_id, type: 'status_update', title: 'Action undone',
         message: result.message, relatedActionId: action.id,
       })
+      await broadcastActivity(
+        user,
+        { ...parsed, action: 'undo' },
+        result.message,
+        'activity',
+        'Activity undone'
+      )
       return { status: 'success', summary: result.message, parsed, action: rowJson(action), data: result.data }
     } catch (err) {
       return { status: 'failed', summary: err.message || 'Could not undo that.', parsed }
@@ -246,10 +270,10 @@ async function processCommand(user, text) {
       summary: `Queued for manager approval: ${parsed.action} ${parsed.entity}`,
       entity_id: pendingParsed.entity_id,
     })
-    await notifyCompanyManagers(user.company_id, null, {
+    await notifyCompany(user.company_id, {
       type: 'approval_needed',
       title: 'Approval needed',
-      message: `${user.full_name} requested ${parsed.action} ${parsed.entity}`,
+      message: `${user.full_name} requested ${parsed.action} ${parsed.entity.replace(/_/g, ' ')} — tap Approvals to review.`,
       relatedActionId: action.id,
     })
     return {
@@ -277,6 +301,7 @@ async function processCommand(user, text) {
       message: result.message,
       relatedActionId: action.id,
     })
+    await broadcastActivity(user, parsed, result.message)
     return { status: 'success', summary: result.message, parsed, action: rowJson(action), data: result.data }
   } catch (err) {
     const action = await writeAction(user, parsed, 'failed', {

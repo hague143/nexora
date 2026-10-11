@@ -46,4 +46,21 @@ async function notifyCompanyManagers(companyId, extra, notification) {
   }
 }
 
-module.exports = { notify, notifyCompanyManagers, sendEmail }
+/**
+ * Broadcast to every active member of the company (the "everyone sees it"
+ * channel for command activity). Optionally exclude one user (e.g. the
+ * actor, who already got a personal notification).
+ */
+async function notifyCompany(companyId, notification, excludeUserId = null) {
+  const { all } = require('../db')
+  const members = await all(
+    `SELECT id FROM users WHERE company_id = ? AND (status IS NULL OR status = 'active')`,
+    [companyId]
+  )
+  for (const m of members) {
+    if (excludeUserId && m.id === excludeUserId) continue
+    await notify(m.id, { ...notification, companyId })
+  }
+}
+
+module.exports = { notify, notifyCompanyManagers, notifyCompany, sendEmail }

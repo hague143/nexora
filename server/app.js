@@ -17,7 +17,7 @@ const {
   approveRequest, rejectRequest, listMembers, updateMember, removeMember,
 } = require('./org')
 const { runAllJobs } = require('./jobs')
-const { notify } = require('./notifications/dispatcher')
+const { notify, notifyCompany } = require('./notifications/dispatcher')
 
 const app = express()
 const JWT_SECRET = process.env.JWT_SECRET || 'nexora-dev-secret-change-me'
@@ -393,15 +393,43 @@ app.get('/api/activity/company', auth, async (req, res) => {
 })
 
 app.get('/api/approvals/pending', auth, async (req, res) => {
-  if (!canApprove(req.user)) return res.json([])
+  if (canApprove(req.user)) {
+    res.json(
+      await many(
+        `SELECT a.*, u.full_name AS actor_name
+         FROM workflow_actions a
+         JOIN users u ON u.id = a.user_id
+         WHERE a.company_id = ? AND a.status IN ('pending_approval','needs_approval')
+         ORDER BY a.created_at ASC`,
+        [req.user.company_id]
+      )
+    )
+    return
+  }
+  // Employees see the status of their own requests.
   res.json(
     await many(
       `SELECT a.*, u.full_name AS actor_name
        FROM workflow_actions a
        JOIN users u ON u.id = a.user_id
-       WHERE a.company_id = ? AND a.status IN ('pending_approval','needs_approval')
+       WHERE a.company_id = ? AND a.user_id = ? AND a.status IN ('pending_approval','needs_approval')
        ORDER BY a.created_at ASC`,
-      [req.user.company_id]
+      [req.user.company_id, req.user.id]
+    )
+  )
+})
+
+app.get('/api/approvals/decided', auth, async (req, res) => {
+  const scope = canApprove(req.user) ? '' : 'AND a.user_id = ?'
+  const params = canApprove(req.user) ? [req.user.company_id] : [req.user.company_id, req.user.id]
+  res.json(
+    await many(
+      `SELECT a.*, u.full_name AS actor_name
+       FROM workflow_actions a
+       JOIN users u ON u.id = a.user_id
+       WHERE a.company_id = ? AND a.fields LIKE '%"decided_by"%' ${scope}
+       ORDER BY a.resolved_at DESC LIMIT 20`,
+      params
     )
   )
 })
@@ -413,7 +441,8 @@ app.post('/api/approvals/:id/approve', auth, async (req, res) => {
     [req.params.id, req.user.company_id]
   )
   if (!row) return res.status(404).json({ error: 'Not found' })
-  await run(`UPDATE workflow_actions SET status = 'completed', resolved_at = ? WHERE id = ?`, [now(), row.id])
+  const approveFields = { ...(rowJson(row).fields || {}), decided_by: req.user.full_name, decided: 'approved' }
+  await run(`UPDATE workflow_actions SET status = 'completed', resolved_at = ?, fields = ? WHERE id = ?`, [now(), JSON.stringify(approveFields), row.id])
   await applyEntityStatus(row, 'approved')
   await notify(row.user_id, {
     companyId: req.user.company_id,
@@ -422,6 +451,13 @@ app.post('/api/approvals/:id/approve', auth, async (req, res) => {
     message: `${req.user.full_name} approved your ${row.entity.replace(/_/g, ' ')}.`,
     relatedActionId: row.id,
   })
+  const requester = await get(`SELECT full_name FROM users WHERE id = ?`, [row.user_id])
+  await notifyCompany(req.user.company_id, {
+    type: 'status_update',
+    title: 'Request approved',
+    message: `${req.user.full_name} approved ${requester ? requester.full_name + "'s" : 'a'} ${row.entity.replace(/_/g, ' ')}.`,
+    relatedActionId: row.id,
+  }, row.user_id)
   res.json(rowJson(await get(`SELECT * FROM workflow_actions WHERE id = ?`, [row.id])))
 })
 
@@ -433,7 +469,7 @@ app.post('/api/approvals/:id/reject', auth, async (req, res) => {
   )
   if (!row) return res.status(404).json({ error: 'Not found' })
   const reason = (req.body || {}).reason || 'Rejected'
-  const fields = { ...(rowJson(row).fields || {}), rejection_reason: reason }
+  const fields = { ...(rowJson(row).fields || {}), rejection_reason: reason, decided_by: req.user.full_name, decided: 'rejected' }
   await run(
     `UPDATE workflow_actions SET status = 'rejected', fields = ?, resolved_at = ?, summary = ? WHERE id = ?`,
     [JSON.stringify(fields), now(), reason, row.id]
@@ -446,6 +482,13 @@ app.post('/api/approvals/:id/reject', auth, async (req, res) => {
     message: `${req.user.full_name} rejected your ${row.entity.replace(/_/g, ' ')}: ${reason}`,
     relatedActionId: row.id,
   })
+  const rejectRequester = await get(`SELECT full_name FROM users WHERE id = ?`, [row.user_id])
+  await notifyCompany(req.user.company_id, {
+    type: 'status_update',
+    title: 'Request rejected',
+    message: `${req.user.full_name} rejected ${rejectRequester ? rejectRequester.full_name + "'s" : 'a'} ${row.entity.replace(/_/g, ' ')}: ${reason}`,
+    relatedActionId: row.id,
+  }, row.user_id)
   res.json(rowJson(await get(`SELECT * FROM workflow_actions WHERE id = ?`, [row.id])))
 })
 

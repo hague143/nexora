@@ -144,11 +144,11 @@ function extractPerson(text, user) {
   if (/\bfor\s+my\b|\bmy\s+(expense|leave|invoice|report|time off|pto|vacation)\b/i.test(t)) {
     return { name: user.full_name, self: true }
   }
-  let m = t.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'s\b/)
+  let m = t.match(/\b([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?)'s\b/)
   if (m && !/^(what|that|this|it)s$/i.test(m[1])) return { name: m[1], self: false }
-  m = t.match(/\b(?:for|by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/)
+  m = t.match(/\b(?:for|by)\s+([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?)\b/)
   if (m) return { name: m[1], self: false }
-  m = t.match(/\b(?:approve|reject|deny|decline)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/)
+  m = t.match(/\b(?:approve|reject|deny|decline)\s+(?:the\s+)?([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?)\b/)
   if (m) return { name: m[1], self: false }
   return null
 }
@@ -408,7 +408,7 @@ function buildFields(t, rawText, entity, action, user) {
   if (entity === 'invoice') {
     if (person && !person.self) f.vendor = person.name
     else {
-      const m = rawText.match(/\bfrom\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/)
+      const m = rawText.match(/\bfrom\s+([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)?)/)
       if (m) f.vendor = m[1]
     }
     if (date) f.due_date = date

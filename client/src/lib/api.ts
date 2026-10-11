@@ -76,6 +76,7 @@ export type WorkflowAction = {
   status: string
   summary?: string
   created_at: string
+  resolved_at?: string | null
 }
 
 export type Invoice = {
