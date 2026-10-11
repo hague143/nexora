@@ -118,6 +118,18 @@ async function main() {
     r = await req(base, 'POST', `/api/approvals/${item3}/approve`, { token: adminToken, body: {} })
     ok('admin can still approve', r.status === 200)
 
+    // 8. direct entity status changes are admin-only (the Finance-page hole)
+    r = await req(base, 'POST', '/api/invoices', { token: empToken, body: { vendor: 'TestVendor', amount: 100 } })
+    const invId = r.data.id
+    r = await req(base, 'PATCH', `/api/invoices/${invId}`, { token: empToken, body: { status: 'approved' } })
+    ok('employee cannot self-approve invoice (403)', r.status === 403)
+    r = await req(base, 'PATCH', `/api/invoices/${invId}`, { token: adminToken, body: { status: 'approved' } })
+    ok('admin can approve invoice', r.status === 200 && r.data.status === 'approved')
+    r = await req(base, 'POST', '/api/purchase-orders', { token: empToken, body: { item: 'paper', quantity: 10, amount: 50 } })
+    const poId = r.data.id
+    r = await req(base, 'PATCH', `/api/purchase-orders/${poId}`, { token: empToken, body: { status: 'approved' } })
+    ok('employee cannot self-approve PO (403)', r.status === 403)
+
     console.log(`\nAll ${n} activity checks passed.`)
   } finally {
     server.close()

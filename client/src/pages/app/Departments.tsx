@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { api, type Invoice, type LeaveRequest, type PurchaseOrder } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -7,6 +8,18 @@ import { Input } from '@/components/ui/input'
 import { formatDate, formatMoney } from '@/lib/utils'
 
 type Expense = { id: string; employee_name: string; amount: number; category: string; status: string; created_at: string }
+
+/** Approve/Reject row buttons — rendered for admins only. Everyone else just queries. */
+function DecideButtons({ onDecide }: { onDecide: (status: 'approved' | 'rejected') => void }) {
+  const { user } = useAuth()
+  if (user?.role !== 'admin') return null
+  return (
+    <>
+      <button className="text-xs font-semibold text-indigo-700" onClick={() => onDecide('approved')}>Approve</button>
+      <button className="text-xs font-semibold text-rose-600" onClick={() => onDecide('rejected')}>Reject</button>
+    </>
+  )
+}
 
 export function FinancePage() {
   const [rows, setRows] = useState<Invoice[]>([])
@@ -55,8 +68,7 @@ export function FinancePage() {
               <td className="px-4 py-3"><Badge status={r.status} /></td>
               <td className="px-4 py-3">{formatDate(r.created_at)}</td>
               <td className="px-4 py-3 space-x-2">
-                <button className="text-xs font-semibold text-indigo-700" onClick={() => setStatus(r.id, 'approved')}>Approve</button>
-                <button className="text-xs font-semibold text-rose-600" onClick={() => setStatus(r.id, 'rejected')}>Reject</button>
+                <DecideButtons onDecide={(status) => setStatus(r.id, status)} />
               </td>
             </tr>
           ))}
@@ -130,8 +142,7 @@ export function HrPage() {
               <td className="px-4 py-3">{r.start_date} → {r.end_date}</td>
               <td className="px-4 py-3"><Badge status={r.status} /></td>
               <td className="px-4 py-3 space-x-2">
-                <button className="text-xs font-semibold text-indigo-700" onClick={() => setStatus(r.id, 'approved')}>Approve</button>
-                <button className="text-xs font-semibold text-rose-600" onClick={() => setStatus(r.id, 'rejected')}>Reject</button>
+                <DecideButtons onDecide={(status) => setStatus(r.id, status)} />
               </td>
             </tr>
           ))}
@@ -184,8 +195,7 @@ export function ProcurementPage() {
               <td className="px-4 py-3">{formatMoney(r.amount)}</td>
               <td className="px-4 py-3"><Badge status={r.status} /></td>
               <td className="px-4 py-3 space-x-2">
-                <button className="text-xs font-semibold text-indigo-700" onClick={() => setStatus(r.id, 'approved')}>Approve</button>
-                <button className="text-xs font-semibold text-rose-600" onClick={() => setStatus(r.id, 'rejected')}>Reject</button>
+                <DecideButtons onDecide={(status) => setStatus(r.id, status)} />
               </td>
             </tr>
           ))}

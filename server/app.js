@@ -588,6 +588,9 @@ app.post('/api/invoices', auth, async (req, res) => {
 app.patch('/api/invoices/:id', auth, async (req, res) => {
   const row = await get(`SELECT * FROM invoices WHERE id = ? AND company_id = ?`, [req.params.id, req.user.company_id])
   if (!row) return res.status(404).json({ error: 'Not found' })
+  if (req.body.status && !canApprove(req.user) && req.body.status !== 'pending') {
+    return res.status(403).json({ error: 'Insufficient permission to change status.' })
+  }
   const vendor = req.body.vendor ?? row.vendor
   const amount = req.body.amount != null ? Number(req.body.amount) : row.amount
   const status = req.body.status ?? row.status
@@ -645,6 +648,9 @@ app.post('/api/purchase-orders', auth, async (req, res) => {
 app.patch('/api/purchase-orders/:id', auth, async (req, res) => {
   const row = await get(`SELECT * FROM purchase_orders WHERE id = ? AND company_id = ?`, [req.params.id, req.user.company_id])
   if (!row) return res.status(404).json({ error: 'Not found' })
+  if (req.body.status && !canApprove(req.user) && req.body.status !== 'pending') {
+    return res.status(403).json({ error: 'Insufficient permission to change status.' })
+  }
   await run(
     `UPDATE purchase_orders SET item = ?, quantity = ?, amount = ?, status = ? WHERE id = ?`,
     [req.body.item ?? row.item, req.body.quantity != null ? Number(req.body.quantity) : row.quantity, req.body.amount != null ? Number(req.body.amount) : row.amount, req.body.status ?? row.status, row.id]
