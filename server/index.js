@@ -1,4 +1,6 @@
 require('./env')
+const path = require('node:path')
+const fs = require('node:fs')
 const express = require('express')
 const cors = require('cors')
 const bcrypt = require('bcryptjs')
@@ -17,6 +19,7 @@ startJobs()
 const app = express()
 const PORT = process.env.PORT || 3001
 const JWT_SECRET = process.env.JWT_SECRET || 'nexora-dev-secret-change-me'
+if (!process.env.JWT_SECRET) console.warn('[nexora] WARNING: JWT_SECRET not set - using insecure dev default. Set JWT_SECRET in production.')
 
 app.use(cors())
 app.use(express.json())
@@ -577,6 +580,20 @@ app.post('/api/jobs/run', auth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
   res.json(runAllJobs())
 })
+
+// Serve the built Vite client so one service hosts API + frontend (same origin).
+// Skip entirely when client/dist is absent (e.g. API-only deploys).
+const clientDist = path.join(__dirname, '..', 'client', 'dist')
+if (fs.existsSync(path.join(clientDist, 'index.html'))) {
+  app.use(express.static(clientDist))
+  // SPA fallback: /api/* keeps hitting the API above; everything else serves index.html
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api')) {
+      return res.sendFile(path.join(clientDist, 'index.html'))
+    }
+    next()
+  })
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Nexora API listening on ${PORT}`)

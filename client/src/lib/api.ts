@@ -1,5 +1,10 @@
 const TOKEN_KEY = 'nexora_token'
 
+// Base URL for the API. Empty = same origin (single-service deploy where the
+// Express server also serves the built client). Set VITE_API_URL when the
+// frontend is hosted separately (e.g. Vercel) from the API.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) || ''
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -20,10 +25,13 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 12000)
   try {
-    const res = await fetch(path, { ...options, headers, signal: options.signal || controller.signal })
+    const res = await fetch(API_BASE + path, { ...options, headers, signal: options.signal || controller.signal })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      throw new Error((data as { error?: string }).error || `Request failed (${res.status})`)
+      throw new Error(
+        (data as { error?: string }).error ||
+          `Request failed (${res.status} ${res.statusText}) for ${API_BASE + path}`,
+      )
     }
     return data as T
   } catch (err) {
