@@ -46,7 +46,7 @@ async function processCommand(user, text) {
   const { parsed, retryCount, needsClarification, followUp } = await parseCommandText(text, user)
 
   if (!parsed || needsClarification) {
-    const action = writeAction(
+    const action = await writeAction(
       user,
       parsed || { department: 'finance', action: 'query', entity: 'invoice', entity_id: null, fields: {} },
       'needs_clarification',
@@ -63,7 +63,7 @@ async function processCommand(user, text) {
 
   const perm = canExecute(user, parsed)
   if (!perm.ok) {
-    const action = writeAction(user, parsed, 'failed', {
+    const action = await writeAction(user, parsed, 'failed', {
       command: text,
       summary: perm.reason,
       error_message: perm.reason,
@@ -89,12 +89,12 @@ async function processCommand(user, text) {
     } catch {
       /* still queue the intent */
     }
-    const action = writeAction(user, pendingParsed, 'pending_approval', {
+    const action = await writeAction(user, pendingParsed, 'pending_approval', {
       command: text,
       summary: `Queued for manager approval: ${parsed.action} ${parsed.entity}`,
       entity_id: pendingParsed.entity_id,
     })
-    notifyCompanyManagers(user.company_id, null, {
+    await notifyCompanyManagers(user.company_id, null, {
       type: 'approval_needed',
       title: 'Approval needed',
       message: `${user.full_name} requested ${parsed.action} ${parsed.entity}`,
@@ -112,12 +112,12 @@ async function processCommand(user, text) {
   try {
     const result = await dispatch(user, parsed)
     if (result.data?.id) parsed.entity_id = result.data.id
-    const action = writeAction(user, parsed, 'completed', {
+    const action = await writeAction(user, parsed, 'completed', {
       command: text,
       summary: result.message,
       entity_id: parsed.entity_id,
     })
-    notify(user.id, {
+    await notify(user.id, {
       companyId: user.company_id,
       type: 'status_update',
       title: 'Command completed',
@@ -132,7 +132,7 @@ async function processCommand(user, text) {
       data: result.data,
     }
   } catch (err) {
-    const action = writeAction(user, parsed, 'failed', {
+    const action = await writeAction(user, parsed, 'failed', {
       command: text,
       summary: err.message || 'Handler failed',
       error_message: err.message || String(err),

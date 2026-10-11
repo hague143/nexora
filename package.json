@@ -1,9 +1,21 @@
 {
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.23.1",
+    "uuid": "^11.1.0"
+  },
   "name": "nexora",
   "private": true,
-  "version": "1.0.0",
   "scripts": {
     "dev": "bash start.sh",
-    "start": "bash start.sh"
+    "start": "bash start.sh",
+    "test:pg": "node test-pg.js"
+  },
+  "version": "1.0.0",
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
   }
 }

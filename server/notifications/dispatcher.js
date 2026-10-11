@@ -13,10 +13,10 @@ function sendEmail(toUserId, notification) {
   console.log(`[email-stub] user=${toUserId} title=${notification.title}`)
 }
 
-function notify(userId, notification) {
+async function notify(userId, notification) {
   const id = randomUUID()
   const created = now()
-  run(
+  await run(
     `INSERT INTO notifications (id, user_id, company_id, type, title, message, related_action_id, is_read, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     [
@@ -34,14 +34,16 @@ function notify(userId, notification) {
   return { id, ...notification, is_read: 0, created_at: created }
 }
 
-function notifyCompanyManagers(companyId, extra, notification) {
+async function notifyCompanyManagers(companyId, extra, notification) {
   const { all } = require('../db')
-  const managers = all(
+  const managers = await all(
     `SELECT id FROM users WHERE company_id = ? AND role IN ('admin','manager')`,
     [companyId]
   )
   const ids = extra ? Array.from(new Set([...managers.map((m) => m.id), extra])) : managers.map((m) => m.id)
-  ids.forEach((uid) => notify(uid, { ...notification, companyId }))
+  for (const uid of ids) {
+    await notify(uid, { ...notification, companyId })
+  }
 }
 
 module.exports = { notify, notifyCompanyManagers, sendEmail }

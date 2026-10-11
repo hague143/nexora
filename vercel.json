@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","buildCommand":"npm --prefix client ci && npm --prefix client run build","crons":[{"path":"/api/jobs/run","schedule":"0 8 * * *"}],"outputDirectory":"client/dist"}

@@ -188,8 +188,8 @@ function heuristicParse(command) {
   }
 }
 
-function logLlm({ userId, input, raw, parsedOk, retryCount, finalStatus }) {
-  run(
+async function logLlm({ userId, input, raw, parsedOk, retryCount, finalStatus }) {
+  await run(
     `INSERT INTO llm_logs (id, user_id, input_text, raw_model_response, parsed_successfully, retry_count, final_status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [randomUUID(), userId || null, input, raw || '', parsedOk ? 1 : 0, retryCount, finalStatus, now()]
@@ -199,7 +199,7 @@ function logLlm({ userId, input, raw, parsedOk, retryCount, finalStatus }) {
 async function parseCommandText(command, user) {
   const heuristic = heuristicParse(command)
   if (!HF_API_TOKEN) {
-    logLlm({
+    await logLlm({
       userId: user.id,
       input: command,
       raw: 'heuristic_no_token',
@@ -233,7 +233,7 @@ async function parseCommandText(command, user) {
       parsed = extractJsonBlock(retryRaw)
     }
   } catch (err) {
-    logLlm({
+    await logLlm({
       userId: user.id,
       input: command,
       raw: String(err.message || err),
@@ -245,7 +245,7 @@ async function parseCommandText(command, user) {
   }
 
   const ok = isValidParsed(parsed)
-  logLlm({
+  await logLlm({
     userId: user.id,
     input: command,
     raw,

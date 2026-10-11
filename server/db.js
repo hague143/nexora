@@ -1,177 +1,76 @@
-const { DatabaseSync } = require('node:sqlite')
-const path = require('node:path')
-const fs = require('node:fs')
+// Postgres (Supabase) data layer — async.
+// Same helper names as the old node:sqlite layer. Write SQL with `?`
+// placeholders exactly as before; they are rewritten to $1, $2, ...
+const { Pool } = require('pg')
 
-const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data')
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true })
+function getPool() {
+  if (!globalThis.__nexoraPool) {
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL is not set')
+    }
+    globalThis.__nexoraPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      // Supabase pooler requires SSL
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    })
+    globalThis.__nexoraPool.on('error', (err) => {
+      console.error('[db] pool error', err.message)
+    })
+  }
+  return globalThis.__nexoraPool
+}
 
-const db = new DatabaseSync(path.join(dataDir, 'nexora.db'))
-db.exec('PRAGMA journal_mode = WAL')
-db.exec('PRAGMA foreign_keys = ON')
+// Rewrite ? placeholders to $n, skipping ? inside single-quoted literals.
+function toPg(sql) {
+  let out = ''
+  let n = 0
+  let inStr = false
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i]
+    if (ch === "'") {
+      if (inStr && sql[i + 1] === "'") {
+        out += "''"
+        i += 1
+        continue
+      }
+      inStr = !inStr
+      out += ch
+      continue
+    }
+    if (ch === '?' && !inStr) {
+      n += 1
+      out += `$${n}`
+      continue
+    }
+    out += ch
+  }
+  return out
+}
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS companies (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  industry TEXT,
-  created_at TEXT NOT NULL
-);
+async function query(sql, params = []) {
+  const res = await getPool().query(toPg(sql), params)
+  return res
+}
 
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  full_name TEXT NOT NULL,
-  company_id TEXT NOT NULL,
-  department TEXT NOT NULL DEFAULT 'finance',
-  role TEXT NOT NULL DEFAULT 'employee',
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (company_id) REFERENCES companies(id)
-);
+async function all(sql, params = []) {
+  return (await query(sql, params)).rows
+}
 
-CREATE TABLE IF NOT EXISTS workflow_actions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  company_id TEXT NOT NULL,
-  department TEXT NOT NULL,
-  action TEXT NOT NULL,
-  entity TEXT NOT NULL,
-  entity_id TEXT,
-  fields TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL,
-  summary TEXT,
-  error_message TEXT,
-  created_at TEXT NOT NULL,
-  resolved_at TEXT,
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
+async function get(sql, params = []) {
+  const rows = await all(sql, params)
+  return rows[0] || null
+}
 
-CREATE TABLE IF NOT EXISTS notifications (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  company_id TEXT NOT NULL,
-  type TEXT NOT NULL,
-  title TEXT NOT NULL,
-  message TEXT NOT NULL,
-  related_action_id TEXT,
-  is_read INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
-);
+async function run(sql, params = []) {
+  await query(sql, params)
+}
 
-CREATE TABLE IF NOT EXISTS llm_logs (
-  id TEXT PRIMARY KEY,
-  user_id TEXT,
-  input_text TEXT NOT NULL,
-  raw_model_response TEXT,
-  parsed_successfully INTEGER NOT NULL DEFAULT 0,
-  retry_count INTEGER NOT NULL DEFAULT 0,
-  final_status TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS demo_requests (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  company TEXT NOT NULL,
-  message TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS invoices (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  vendor TEXT NOT NULL,
-  amount REAL NOT NULL,
-  due_date TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS expenses (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  employee_name TEXT NOT NULL,
-  amount REAL NOT NULL,
-  category TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS leave_requests (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  employee_id TEXT,
-  employee_name TEXT NOT NULL,
-  type TEXT NOT NULL,
-  start_date TEXT NOT NULL,
-  end_date TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending'
-);
-
-CREATE TABLE IF NOT EXISTS purchase_orders (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  item TEXT NOT NULL,
-  quantity INTEGER NOT NULL,
-  amount REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending'
-);
-
-CREATE TABLE IF NOT EXISTS employees (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  full_name TEXT NOT NULL,
-  email TEXT,
-  department TEXT,
-  title TEXT,
-  status TEXT NOT NULL DEFAULT 'active',
-  start_date TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS shipments (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  carrier TEXT,
-  tracking TEXT,
-  origin TEXT,
-  destination TEXT,
-  status TEXT NOT NULL DEFAULT 'created',
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS inventory_items (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  sku TEXT NOT NULL,
-  name TEXT NOT NULL,
-  quantity INTEGER NOT NULL DEFAULT 0,
-  reorder_level INTEGER NOT NULL DEFAULT 10,
-  status TEXT NOT NULL DEFAULT 'ok',
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS quality_inspections (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  lot TEXT,
-  inspector TEXT,
-  due_date TEXT,
-  result TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS quality_issues (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  severity TEXT NOT NULL DEFAULT 'medium',
-  status TEXT NOT NULL DEFAULT 'open',
-  created_at TEXT NOT NULL
-);
-`)
+async function many(sql, params = []) {
+  return (await all(sql, params)).map((r) => rowJson(r))
+}
 
 function now() {
   return new Date().toISOString()
@@ -195,20 +94,4 @@ function rowJson(row, key = 'fields') {
   return copy
 }
 
-function all(sql, params = []) {
-  return db.prepare(sql).all(...params)
-}
-
-function get(sql, params = []) {
-  return db.prepare(sql).get(...params)
-}
-
-function run(sql, params = []) {
-  return db.prepare(sql).run(...params)
-}
-
-function many(sql, params = []) {
-  return all(sql, params).map((r) => rowJson(r))
-}
-
-module.exports = { db, now, rowJson, all, get, run, many }
+module.exports = { getPool, query, now, rowJson, all, get, run, many, toPg }
