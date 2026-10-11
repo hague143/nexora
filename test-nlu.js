@@ -18,7 +18,8 @@ check('quantity qty 40', () => assert.strictEqual(nlu.extractQuantity('gloves, q
 check('quantity 40 units', () => assert.strictEqual(nlu.extractQuantity('40 units of cable'), 40))
 check('date tomorrow', () => {
   const d = new Date(); d.setDate(d.getDate() + 1)
-  assert.strictEqual(nlu.extractDate('ship it tomorrow'), d.toISOString().slice(0, 10))
+  const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  assert.strictEqual(nlu.extractDate('ship it tomorrow'), local)
 })
 check('date next Friday', () => {
   const ref = new Date(2026, 9, 12) // Mon Oct 12 2026

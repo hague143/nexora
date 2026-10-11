@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -9,8 +9,10 @@ import { api } from '@/lib/api'
 export function Login() {
   const { login, google } = useAuth()
   const nav = useNavigate()
+  const location = useLocation() as { state?: { notice?: string } | null }
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [noticeMsg] = useState((location.state as { notice?: string } | null)?.notice || '')
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -52,6 +54,7 @@ export function Login() {
           <Input id="password" name="password" type="password" defaultValue="demo1234" required className="mt-1" />
         </div>
         {error && <p className="text-sm text-rose-600">{error}</p>}
+        {noticeMsg && <p className="text-sm text-emerald-600">{noticeMsg}</p>}
         <Button className="w-full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</Button>
       </form>
       <Button variant="outline" className="mt-3 w-full" onClick={onGoogle} disabled={busy}>Explore the demo workspace</Button>

@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, type Company, type Role, type User } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,8 +9,9 @@ import { Label } from '@/components/ui/label'
 import { useAuth } from '@/lib/auth'
 
 export function SettingsPage() {
-  const { user, company } = useAuth()
-  const [tab, setTab] = useState<'company' | 'team' | 'integrations'>('company')
+  const { user, company, logout } = useAuth()
+  const navigate = useNavigate()
+  const [tab, setTab] = useState<'company' | 'team' | 'integrations' | 'account'>('company')
   const [profile, setProfile] = useState<Company | null>(company)
   const [team, setTeam] = useState<User[]>([])
   const [integrations, setIntegrations] = useState<{
@@ -54,7 +56,7 @@ export function SettingsPage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Settings</h1>
       <div className="flex gap-2">
-        {(['company', 'team', 'integrations'] as const).map((t) => (
+        {(['company', 'team', 'integrations', 'account'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -140,6 +142,69 @@ export function SettingsPage() {
           </Card>
         </div>
       )}
+      {tab === 'account' && (
+        <div className="max-w-lg space-y-4">
+          <Card className="p-5">
+            <p className="font-semibold">My account</p>
+            <dl className="mt-3 space-y-1 text-sm text-slate-600">
+              <div className="flex justify-between"><dt>Name</dt><dd className="font-medium text-slate-900">{user?.full_name}</dd></div>
+              <div className="flex justify-between"><dt>Email</dt><dd className="font-medium text-slate-900">{user?.email}</dd></div>
+              <div className="flex justify-between"><dt>Role</dt><dd className="font-medium capitalize text-slate-900">{user?.role}</dd></div>
+              <div className="flex justify-between"><dt>Company</dt><dd className="font-medium text-slate-900">{company?.name}</dd></div>
+            </dl>
+          </Card>
+          <DangerZone
+            onDeleted={() => {
+              logout()
+              navigate('/login', { state: { notice: 'Your account has been deleted.' } })
+            }}
+          />
+        </div>
+      )}
     </div>
+  )
+}
+
+function DangerZone({ onDeleted }: { onDeleted: () => void }) {
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleDelete() {
+    if (!armed) {
+      setArmed(true)
+      window.setTimeout(() => setArmed(false), 10000)
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await api('/api/settings/account', { method: 'DELETE' })
+      onDeleted()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Deletion failed')
+      setArmed(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="border-rose-200 p-5">
+      <p className="font-semibold text-rose-700">Danger zone</p>
+      <p className="mt-1 text-sm text-slate-600">
+        Permanently delete your account and personal data (notifications, command history).
+        Company business records stay with the company. This cannot be undone.
+      </p>
+      {error && <p className="mt-2 text-sm font-medium text-rose-600">{error}</p>}
+      <Button
+        variant="outline"
+        className={`mt-3 ${armed ? 'border-rose-600 bg-rose-600 text-white hover:bg-rose-700' : 'border-rose-300 text-rose-700 hover:bg-rose-50'}`}
+        onClick={handleDelete}
+        disabled={busy}
+      >
+        {busy ? 'Deleting…' : armed ? 'Click again to confirm deletion' : 'Delete my account'}
+      </Button>
+    </Card>
   )
 }

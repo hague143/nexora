@@ -157,6 +157,22 @@ async function main() {
     })
     ok('cannot demote last admin', r.status === 400)
 
+    // 12. account deletion (Play Store data-deletion requirement)
+    r = await req(base, 'POST', '/api/auth/login', {
+      body: { email: 'applicant@acme.test', password: 'password123' },
+    })
+    const applicantToken = r.data.token
+    ok('applicant login ok', r.status === 200 && !!applicantToken)
+    await req(base, 'POST', '/api/command', { token: applicantToken, body: { text: 'show me pending approvals' } })
+    r = await req(base, 'DELETE', '/api/settings/account', { token: applicantToken })
+    ok('member deletes own account', r.status === 200)
+    r = await req(base, 'POST', '/api/auth/login', {
+      body: { email: 'applicant@acme.test', password: 'password123' },
+    })
+    ok('deleted account cannot login', r.status !== 200)
+    r = await req(base, 'DELETE', '/api/settings/account', { token: founderToken })
+    ok('last admin cannot delete own account', r.status === 400)
+
     console.log(`\nAll ${n} org access checks passed.`)
   } finally {
     server.close()

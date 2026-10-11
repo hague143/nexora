@@ -807,6 +807,33 @@ app.patch('/api/settings/team/:id/role', auth, async (req, res) => {
   await run(`UPDATE users SET role = ? WHERE id = ?`, [role, target.id])
   res.json(publicUser(await get(`SELECT * FROM users WHERE id = ?`, [target.id])))
 })
+
+/**
+ * Delete my own account (Play Store data-deletion requirement).
+ * Removes personal data (notifications, command history); company business
+ * records (invoices, POs, ...) stay with the company. The last admin of a
+ * company must promote a replacement first — a company can't be orphaned.
+ */
+app.delete('/api/settings/account', auth, async (req, res) => {
+  const me = req.user
+  if (me.role === 'admin') {
+    let others
+    try {
+      others = await all(`SELECT id, role, status FROM users WHERE company_id = ? AND id != ?`, [me.company_id, me.id])
+    } catch {
+      others = await all(`SELECT id, role FROM users WHERE company_id = ? AND id != ?`, [me.company_id, me.id])
+    }
+    const activeAdmins = others.filter((u) => u.role === 'admin' && (u.status == null || u.status === 'active'))
+    if (!activeAdmins.length) {
+      return res.status(400).json({ error: 'You are the last admin. Promote another admin before deleting your account.' })
+    }
+  }
+  await run(`DELETE FROM notifications WHERE user_id = ?`, [me.id])
+  await run(`DELETE FROM workflow_actions WHERE user_id = ?`, [me.id])
+  await run(`DELETE FROM pending_commands WHERE user_id = ?`, [me.id]).catch(() => {})
+  await run(`DELETE FROM users WHERE id = ?`, [me.id])
+  res.json({ ok: true })
+})
 app.get('/api/settings/integrations', auth, (_req, res) => {
   const hf = Boolean(process.env.HF_API_TOKEN)
   res.json({
